@@ -1,5 +1,17 @@
+local runtime = require("@yune/runtime")
 local render = require("@yune/render")
 local assetService = game:GetService("AssetService")
+local runService = game:GetService("RunService")
+
+local heartbeats = 0
+runService.Heartbeat:Connect(function(dt)
+    assert(dt > 0)
+    heartbeats += 1
+end)
+
+runtime.runFrames(3, 1 / 60)
+assert(heartbeats == 3)
+assert(runtime.getFrame() == 3)
 
 local camera = Instance.new("Camera")
 camera.CFrame = CFrame.lookAt(Vector3.new(8, 6, 10), Vector3.new(0, 0.5, 0))
