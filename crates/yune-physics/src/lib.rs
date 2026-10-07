@@ -78,7 +78,7 @@ impl PhysicsWorld {
         parameters.dt = dt;
 
         self.pipeline.step(
-            &gravity,
+            gravity,
             &parameters,
             &mut self.islands,
             &mut self.broad_phase,
