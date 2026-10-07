@@ -241,7 +241,13 @@ fn capture(
     let mut gui_objects = 0u64;
     let mut viewport_parts = 0u64;
     let mut viewport_triangles = 0u64;
-    for gui_root in gui_roots(&options)? {
+    let explicit_gui_roots = gui_roots(&options)?;
+    let active_gui_roots = if explicit_gui_roots.is_empty() {
+        default_gui_roots(game)
+    } else {
+        explicit_gui_roots
+    };
+    for gui_root in active_gui_roots {
         let stats = render_gui(&mut framebuffer, gui_root, state);
         gui_objects += stats.objects;
         viewport_parts += stats.viewport_parts;
@@ -282,4 +288,40 @@ fn gui_roots(options: &LuaTable) -> LuaResult<Vec<Instance>> {
             .collect(),
         value => Err(LuaError::runtime(format!("'gui' must be an Instance or array of Instances, got {}", value.type_name()))),
     }
+}
+
+
+fn default_gui_roots(game: Instance) -> Vec<Instance> {
+    let mut roots = Vec::new();
+
+    if let Some(core_gui) = game
+        .get_children()
+        .into_iter()
+        .find(|child| child.get_class_name() == "CoreGui")
+    {
+        roots.push(core_gui);
+    }
+
+    if let Some(players) = game
+        .get_children()
+        .into_iter()
+        .find(|child| child.get_class_name() == "Players")
+    {
+        let local_player = props::ref_prop(&players, "LocalPlayer").or_else(|| {
+            players
+                .get_children()
+                .into_iter()
+                .find(|child| child.get_class_name() == "Player")
+        });
+        if let Some(local_player) = local_player
+            && let Some(player_gui) = local_player
+                .get_children()
+                .into_iter()
+                .find(|child| child.get_class_name() == "PlayerGui")
+        {
+            roots.push(player_gui);
+        }
+    }
+
+    roots
 }
