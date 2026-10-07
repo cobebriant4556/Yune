@@ -9,6 +9,7 @@ mod world_gui;
 
 use std::{collections::HashMap, fs, path::Path, sync::{Arc, Mutex}};
 
+use fontdue::{Font, FontSettings};
 use glam::{Vec2, Vec3};
 use image::ImageReader;
 use lune_roblox::{
@@ -39,6 +40,7 @@ pub struct RenderState {
     mesh_assets: Arc<Mutex<HashMap<String, Arc<StaticMesh>>>>,
     images: Arc<Mutex<HashMap<String, ImageBinding>>>,
     image_assets: Arc<Mutex<HashMap<String, ImageBinding>>>,
+    fonts: Arc<Mutex<HashMap<String, Arc<Font>>>>,
 }
 
 impl RenderState {
@@ -87,6 +89,21 @@ impl RenderState {
             .get(content_id)
             .cloned()
     }
+
+    fn register_font(&self, family: String, font: Font) {
+        self.fonts
+            .lock()
+            .expect("font asset lock poisoned")
+            .insert(family, Arc::new(font));
+    }
+
+    pub(crate) fn font_asset(&self, family: &str) -> Option<Arc<Font>> {
+        let fonts = self.fonts.lock().expect("font asset lock poisoned");
+        fonts
+            .get(family)
+            .cloned()
+            .or_else(|| fonts.values().next().cloned())
+    }
 }
 
 pub fn install(lua: &Lua, state: RenderState) -> LuaResult<LuaValue> {
@@ -130,6 +147,18 @@ pub fn install_into(
         "bindEditableImage",
         lua.create_function(move |_, (instance, image): (LuaUserDataRef<Instance>, LuaUserDataRef<EditableImage>)| {
             bind_editable_image_state.bind_image(instance_key(&instance), ImageBinding::Editable(image.clone()));
+            Ok(())
+        })?,
+    )?;
+
+    let register_font_state = state.clone();
+    module.set(
+        "registerFont",
+        lua.create_function(move |_, (family, path): (String, String)| {
+            let bytes = fs::read(&path).map_err(LuaError::external)?;
+            let font = Font::from_bytes(bytes, FontSettings::default())
+                .map_err(|error| LuaError::runtime(format!("failed to parse font: {error}")))?;
+            register_font_state.register_font(family, font);
             Ok(())
         })?,
     )?;
