@@ -96,6 +96,9 @@ impl PhysicsWorld {
     }
 
     pub fn apply_impulse(&mut self, instance: Instance, impulse: Vec3) {
+        if !self.records.contains_key(&instance_key(&instance)) {
+            self.sync_part(instance);
+        }
         if let Some(record) = self.records.get(&instance_key(&instance)).copied()
             && let Some(body) = self.bodies.get_mut(record.body)
         {
@@ -104,6 +107,9 @@ impl PhysicsWorld {
     }
 
     pub fn apply_angular_impulse(&mut self, instance: Instance, impulse: Vec3) {
+        if !self.records.contains_key(&instance_key(&instance)) {
+            self.sync_part(instance);
+        }
         if let Some(record) = self.records.get(&instance_key(&instance)).copied()
             && let Some(body) = self.bodies.get_mut(record.body)
         {
@@ -111,7 +117,10 @@ impl PhysicsWorld {
         }
     }
 
-    pub fn mass(&self, instance: Instance) -> f32 {
+    pub fn mass(&mut self, instance: Instance) -> f32 {
+        if !self.records.contains_key(&instance_key(&instance)) {
+            self.sync_part(instance);
+        }
         self.records
             .get(&instance_key(&instance))
             .and_then(|record| self.bodies.get(record.body))
@@ -268,7 +277,7 @@ fn collect_joint_children(workspace: Instance) -> HashSet<String> {
         .filter(|instance| {
             matches!(
                 instance.get_class_name(),
-                "Motor6D" | "Motor" | "Weld"
+                "Motor6D" | "Motor" | "Weld" | "WeldConstraint"
             )
         })
         .filter_map(|joint| ref_prop(&joint, "Part1"))
