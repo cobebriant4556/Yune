@@ -21,11 +21,11 @@ pub struct GuiStats {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Rect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+pub(crate) struct Rect {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 #[derive(Debug, Clone)]
