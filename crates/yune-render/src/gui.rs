@@ -37,18 +37,28 @@ struct DrawItem {
 }
 
 pub fn render_gui(framebuffer: &mut Framebuffer, root: Instance, state: &RenderState) -> GuiStats {
-    if root.is_a("LayerCollector") && !bool_prop(&root, "Enabled", true) {
-        return GuiStats::default();
-    }
     let screen = Rect {
         x: 0.0,
         y: 0.0,
         w: framebuffer.width as f32,
         h: framebuffer.height as f32,
     };
+    render_gui_in_rect(framebuffer, root, state, screen)
+}
+
+pub(crate) fn render_gui_in_rect(
+    framebuffer: &mut Framebuffer,
+    root: Instance,
+    state: &RenderState,
+    root_rect: Rect,
+) -> GuiStats {
+    if root.is_a("LayerCollector") && !bool_prop(&root, "Enabled", true) {
+        return GuiStats::default();
+    }
+
     let mut items = Vec::new();
     let mut order = 0;
-    collect_gui_items(root, screen, &mut items, &mut order);
+    collect_gui_items(root, root_rect, &mut items, &mut order);
     items.sort_by_key(|item| (item.z, item.order));
 
     let mut stats = GuiStats::default();
