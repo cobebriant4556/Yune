@@ -543,20 +543,20 @@ impl From<CFrame> for DomCFrame {
 }
 
 /**
-    Creates a matrix at the position `from`, looking towards `to`.
-
-    [`glam`] does provide functions such as [`look_at_lh`], [`look_at_rh`] and more but
-    they all create view matrices for camera transforms which is not what we want here.
+    Creates a world transform at `from` with its negative Z axis facing `to`.
+    The basis vectors are columns, not the rows of a camera view matrix.
 */
 fn look_at(from: Vec3, to: Vec3, up: Vec3) -> Mat4 {
-    let dir = (to - from).normalize();
-    let xaxis = up.cross(dir).normalize();
-    let yaxis = dir.cross(xaxis).normalize();
-
+    let backward = (from - to).try_normalize().unwrap_or(Vec3::Z);
+    let right = up.cross(backward).try_normalize().unwrap_or_else(|| {
+        let fallback_up = if backward.y.abs() > 0.999 { Vec3::X } else { Vec3::Y };
+        fallback_up.cross(backward).normalize()
+    });
+    let corrected_up = backward.cross(right).normalize();
     Mat4::from_cols(
-        Vec3::new(xaxis.x, yaxis.x, dir.x).extend(0.0),
-        Vec3::new(xaxis.y, yaxis.y, dir.y).extend(0.0),
-        Vec3::new(xaxis.z, yaxis.z, dir.z).extend(0.0),
+        right.extend(0.0),
+        corrected_up.extend(0.0),
+        backward.extend(0.0),
         from.extend(1.0),
     )
 }
@@ -566,7 +566,22 @@ mod cframe_test {
     use glam::{Mat4, Vec3};
     use rbx_dom_weak::types::{CFrame as DomCFrame, Matrix3 as DomMatrix3, Vector3 as DomVector3};
 
-    use super::CFrame;
+    use super::{CFrame, look_at};
+
+    #[test]
+    fn look_at_uses_negative_z_and_world_basis_columns() {
+        for (from, to) in [
+            (Vec3::new(0.0, 0.0, 8.0), Vec3::ZERO),
+            (Vec3::new(8.0, 6.0, 10.0), Vec3::new(0.0, 0.5, 0.0)),
+            (Vec3::ZERO, Vec3::Y),
+        ] {
+            let matrix = look_at(from, to, Vec3::Y);
+            assert!((-matrix.z_axis.truncate()).abs_diff_eq((to - from).normalize(), 1e-5));
+            assert!(matrix.w_axis.truncate().abs_diff_eq(from, 1e-5));
+            assert!(matrix.inverse().transform_point3(to).z < 0.0);
+            assert!((matrix.determinant() - 1.0).abs() < 1e-5);
+        }
+    }
 
     #[test]
     fn dom_cframe_from_cframe() {
@@ -578,14 +593,12 @@ mod cframe_test {
                 DomVector3::new(1.0, 2.0, 3.0),
             ),
         );
-
         let cframe = CFrame(Mat4::from_cols(
             Vec3::new(1.0, 1.0, 1.0).extend(0.0),
             Vec3::new(2.0, 2.0, 2.0).extend(0.0),
             Vec3::new(3.0, 3.0, 3.0).extend(0.0),
             Vec3::new(1.0, 2.0, 3.0).extend(1.0),
         ));
-
         assert_eq!(CFrame::from(dom_cframe), cframe);
     }
 
@@ -597,7 +610,6 @@ mod cframe_test {
             Vec3::new(1.0, 2.0, 3.0).extend(0.0),
             Vec3::new(1.0, 2.0, 3.0).extend(1.0),
         ));
-
         let dom_cframe = DomCFrame::new(
             DomVector3::new(1.0, 2.0, 3.0),
             DomMatrix3::new(
@@ -606,7 +618,6 @@ mod cframe_test {
                 DomVector3::new(3.0, 3.0, 3.0),
             ),
         );
-
         assert_eq!(DomCFrame::from(cframe), dom_cframe);
     }
 }

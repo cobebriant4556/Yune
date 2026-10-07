@@ -1,14 +1,27 @@
 import json
 import os
 from pathlib import Path
+import shutil
+import struct
 import subprocess
 import sys
+import zlib
 
 root = Path(__file__).resolve().parents[1]
 binary = root / "target" / "debug" / ("yune.exe" if os.name == "nt" else "yune")
 output = root / "test-results"
-output.mkdir(exist_ok=True)
-scenes = ["require_regression", "runtime_smoke", "render_smoke", "visual_smoke"]
+assets = output / "assets"
+assets.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(root / "examples/assets/triangle.mesh", assets / "123.mesh")
+
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+scanline = b"\x00" + bytes([255, 0, 0, 255]) * 2
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(scanline * 2)) + chunk(b"IEND", b"")
+(assets / "456").write_bytes(png)
+scenes = ["require_regression", "runtime_smoke", "cframe_regression", "render_smoke", "visual_smoke", "asset_regression"]
 results = []
 for scene in scenes:
     log = output / f"{scene}.log"
