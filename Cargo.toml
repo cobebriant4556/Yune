@@ -23,6 +23,7 @@ rbx_mesh = { version = "0.8.0", default-features = false, features = ["mesh", "m
 rapier3d = "0.35.3"
 lune = { path = "upstream/lune/crates/lune" }
 lune-roblox = { path = "upstream/lune/crates/lune-roblox" }
+lune-std-task = { path = "upstream/lune/crates/lune-std-task" }
 yune-runtime = { path = "crates/yune-runtime" }
 yune-reference = { path = "crates/yune-reference" }
 yune-physics = { path = "crates/yune-physics" }
