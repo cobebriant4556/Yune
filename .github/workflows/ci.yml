@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -10,26 +14,34 @@ concurrency:
 
 jobs:
   build:
+    timeout-minutes: 25
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check -p yune -p yune-runtime -p yune-render -p yune-reference -p yune-physics
-      - run: cargo test -p yune -p yune-runtime -p yune-render -p yune-reference -p yune-physics
-  smoke-render:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run -- run examples/runtime_smoke.luau
-      - run: cargo run -- run examples/render_smoke.luau
-      - run: cargo run -- run examples/visual_smoke.luau
-      - uses: actions/upload-artifact@v4
+      - uses: actions/cache@v4
         with:
-          name: yune-smoke-frame
           path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: yune-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            yune-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
+      - run: cargo test -p yune -p yune-runtime -p yune-render -p yune-reference -p yune-physics
+      - run: cargo build -p yune
+      - name: Execute all smoke tests
+        run: python scripts/run_smoke.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: yune-tests-${{ runner.os }}
+          path: |
+            test-results/
             yune-smoke.png
             yune-visual-smoke.png
+          if-no-files-found: warn
