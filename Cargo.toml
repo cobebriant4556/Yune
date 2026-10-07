@@ -13,6 +13,7 @@ anyhow = "1.0"
 base64 = "0.22"
 async-io = "2.4"
 font8x8 = "0.3"
+fontdue = "0.9"
 glam = "0.33"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mlua = { version = "0.11.6", features = ["luau"] }
