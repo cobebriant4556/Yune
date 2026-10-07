@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run -- run examples/runtime_smoke.luau
       - run: cargo run -- run examples/render_smoke.luau
       - uses: actions/upload-artifact@v4
         with:
