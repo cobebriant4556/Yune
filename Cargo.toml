@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/yune", "crates/yune-render"]
+members = ["crates/yune", "crates/yune-runtime", "crates/yune-render"]
 default-members = ["crates/yune"]
 
 [workspace.package]
@@ -16,6 +16,7 @@ glam = "0.33"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mlua = { version = "0.11.6", features = ["luau"] }
 rbx_dom_weak = "4.0"
-lune = { git = "https://github.com/lune-org/lune", rev = "d96087b46e8c3b751a50f6e80ca099e1008e7e33" }
-lune-roblox = { git = "https://github.com/lune-org/lune", rev = "d96087b46e8c3b751a50f6e80ca099e1008e7e33" }
+lune = { path = "upstream/lune/crates/lune" }
+lune-roblox = { path = "upstream/lune/crates/lune-roblox" }
+yune-runtime = { path = "crates/yune-runtime" }
 yune-render = { path = "crates/yune-render" }
