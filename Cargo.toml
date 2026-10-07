@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/yune", "crates/yune-runtime", "crates/yune-render", "crates/yune-reference"]
+members = ["crates/yune", "crates/yune-runtime", "crates/yune-render", "crates/yune-reference", "crates/yune-physics"]
 default-members = ["crates/yune"]
 
 [workspace.package]
@@ -17,10 +17,12 @@ glam = "0.33"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mlua = { version = "0.11.6", features = ["luau"] }
 rbx_dom_weak = "4.0"
+rapier3d = "0.35.3"
 lune = { path = "upstream/lune/crates/lune" }
 lune-roblox = { path = "upstream/lune/crates/lune-roblox" }
 yune-runtime = { path = "crates/yune-runtime" }
 yune-reference = { path = "crates/yune-reference" }
+yune-physics = { path = "crates/yune-physics" }
 yune-render = { path = "crates/yune-render" }
 
 [workspace.lints.clippy]
