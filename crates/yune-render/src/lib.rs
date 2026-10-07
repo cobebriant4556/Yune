@@ -5,6 +5,7 @@ mod gui;
 mod mesh_asset;
 mod props;
 mod raster;
+mod world_gui;
 
 use std::{collections::HashMap, fs, path::Path, sync::{Arc, Mutex}};
 
@@ -24,6 +25,7 @@ use gui::render_gui;
 use mesh_asset::StaticMesh;
 use props::{color_prop, instance_key};
 use raster::{Lighting, render_world};
+use world_gui::render_world_guis;
 
 #[derive(Clone)]
 pub enum ImageBinding {
@@ -305,10 +307,11 @@ fn capture(
     }
 
     let world_stats = render_world(&mut framebuffer, world, camera, state, lighting);
+    let world_gui_stats = render_world_guis(&mut framebuffer, world, camera, state);
 
-    let mut gui_objects = 0u64;
-    let mut viewport_parts = 0u64;
-    let mut viewport_triangles = 0u64;
+    let mut gui_objects = world_gui_stats.objects;
+    let mut viewport_parts = world_gui_stats.viewport_parts;
+    let mut viewport_triangles = world_gui_stats.viewport_triangles;
     let explicit_gui_roots = gui_roots(&options)?;
     let active_gui_roots = if explicit_gui_roots.is_empty() {
         default_gui_roots(game)
