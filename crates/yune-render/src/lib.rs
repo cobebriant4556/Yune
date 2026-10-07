@@ -36,6 +36,7 @@ pub struct RenderState {
     meshes: Arc<Mutex<HashMap<String, EditableMesh>>>,
     mesh_assets: Arc<Mutex<HashMap<String, Arc<StaticMesh>>>>,
     images: Arc<Mutex<HashMap<String, ImageBinding>>>,
+    image_assets: Arc<Mutex<HashMap<String, ImageBinding>>>,
 }
 
 impl RenderState {
@@ -68,6 +69,21 @@ impl RenderState {
 
     pub(crate) fn image_binding(&self, key: &str) -> Option<ImageBinding> {
         self.images.lock().expect("image binding lock poisoned").get(key).cloned()
+    }
+
+    fn register_image_asset(&self, content_id: String, image: ImageBinding) {
+        self.image_assets
+            .lock()
+            .expect("image asset lock poisoned")
+            .insert(content_id, image);
+    }
+
+    pub(crate) fn image_asset(&self, content_id: &str) -> Option<ImageBinding> {
+        self.image_assets
+            .lock()
+            .expect("image asset lock poisoned")
+            .get(content_id)
+            .cloned()
     }
 }
 
@@ -112,6 +128,29 @@ pub fn install_into(
         "bindEditableImage",
         lua.create_function(move |_, (instance, image): (LuaUserDataRef<Instance>, LuaUserDataRef<EditableImage>)| {
             bind_editable_image_state.bind_image(instance_key(&instance), ImageBinding::Editable(image.clone()));
+            Ok(())
+        })?,
+    )?;
+
+    let register_image_state = state.clone();
+    module.set(
+        "registerImage",
+        lua.create_function(move |_, (content_id, path): (String, String)| {
+            let image = ImageReader::open(Path::new(&path))
+                .map_err(LuaError::external)?
+                .decode()
+                .map_err(LuaError::external)?
+                .to_rgba8();
+            let width = image.width();
+            let height = image.height();
+            register_image_state.register_image_asset(
+                content_id,
+                ImageBinding::Pixels {
+                    width,
+                    height,
+                    pixels: Arc::new(image.into_raw()),
+                },
+            );
             Ok(())
         })?,
     )?;
