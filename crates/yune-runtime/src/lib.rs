@@ -24,6 +24,7 @@ use yune_physics::PhysicsWorld;
 #[derive(Clone, Default)]
 struct FrameSignals {
     stepped: Signal,
+    pre_animation: Signal,
     pre_simulation: Signal,
     post_simulation: Signal,
     heartbeat: Signal,
@@ -233,6 +234,11 @@ fn install_run_service(lua: &Lua, state: &RuntimeState) -> LuaResult<()> {
     install_signal_getter(lua, "Stepped", state.signals.stepped.clone())?;
     install_signal_getter(
         lua,
+        "PreAnimation",
+        state.signals.pre_animation.clone(),
+    )?;
+    install_signal_getter(
+        lua,
         "PreSimulation",
         state.signals.pre_simulation.clone(),
     )?;
@@ -330,7 +336,7 @@ fn install_physics_api(lua: &Lua, physics: Rc<RefCell<PhysicsWorld>>) -> LuaResu
 
     let mass_physics = physics.clone();
     let get_mass = lua.create_function(move |_, part: LuaUserDataRef<Instance>| {
-        Ok(mass_physics.borrow().mass(*part))
+        Ok(mass_physics.borrow_mut().mass(*part))
     })?;
     InstanceRegistry::insert_method(lua, "BasePart", "GetMass", get_mass)
         .map_err(LuaError::external)?;
@@ -377,9 +383,10 @@ fn step_runtime(state: &RuntimeState, dt: f64) -> LuaResult<()> {
         .set_property("FrameNumber", Variant::Int64(new_frame as i64));
 
     state.signals.stepped.fire2(old_time, dt)?;
+    state.signals.pre_animation.fire1(dt)?;
+    state.animations.borrow_mut().step(state.workspace, dt);
     state.signals.pre_simulation.fire1(dt)?;
 
-    state.animations.borrow_mut().step(state.workspace, dt);
     state.joints.borrow_mut().solve(state.workspace);
     state.physics.borrow_mut().step(state.workspace, dt);
     state.joints.borrow_mut().solve(state.workspace);
