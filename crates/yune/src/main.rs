@@ -15,7 +15,7 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<ExitCode> {
     let mut args = env::args_os().skip(1).collect::<Vec<_>>();
-    if args.first().and_then(|v| v.to_str()) == Some("run") {
+    if args.first().and_then(|value| value.to_str()) == Some("run") {
         args.remove(0);
     }
     if args.is_empty() {
@@ -24,15 +24,11 @@ async fn run() -> Result<ExitCode> {
 
     let script = PathBuf::from(args.remove(0));
     let script_args = args;
-    let state = yune_render::RenderState::default();
 
     let mut runtime = Runtime::new()
         .context("failed to initialize Lune runtime")?
         .with_args(script_args)
-        .with_lib("@yune/render", {
-            let state = state.clone();
-            move |lua| yune_render::install(lua, state)
-        })?;
+        .with_lib("@yune/runtime", yune_runtime::install)?;
 
     let result = runtime
         .run_file(script)
