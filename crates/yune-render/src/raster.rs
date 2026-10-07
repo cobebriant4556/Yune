@@ -1,7 +1,7 @@
 use glam::{Mat4, Vec3, Vec4};
 use lune_roblox::instance::Instance;
 
-use crate::{RenderState, framebuffer::Framebuffer, props::{cframe_prop, color_prop, f32_prop, instance_key, vec3_prop}};
+use crate::{RenderState, framebuffer::Framebuffer, props::{cframe_prop, color_prop, content_prop, f32_prop, instance_key, vec3_prop}};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Lighting {
@@ -92,6 +92,24 @@ pub fn render_world(
                     if draw_triangle(framebuffer, view_projection, aw, bw, cw, color, alpha, lighting) {
                         stats.triangles += 1;
                     }
+                }
+            }
+        } else if instance.get_class_name() == "MeshPart"
+            && let Some(mesh_id) = content_prop(&instance, "MeshId")
+            && let Some(mesh) = state.mesh_asset(&mesh_id)
+        {
+            let size = vec3_prop(&instance, "Size", mesh.mesh_size());
+            let scale = size / mesh.mesh_size();
+            let center = mesh.center();
+            for triangle in &mesh.triangles {
+                let a = (mesh.vertices[triangle[0] as usize] - center) * scale;
+                let b = (mesh.vertices[triangle[1] as usize] - center) * scale;
+                let c = (mesh.vertices[triangle[2] as usize] - center) * scale;
+                let aw = transform.transform_point3(a);
+                let bw = transform.transform_point3(b);
+                let cw = transform.transform_point3(c);
+                if draw_triangle(framebuffer, view_projection, aw, bw, cw, color, alpha, lighting) {
+                    stats.triangles += 1;
                 }
             }
         } else {
