@@ -9,6 +9,7 @@ description = "DataModel, services, frame loop, and runtime bridge for Yune"
 [dependencies]
 glam.workspace = true
 lune-roblox.workspace = true
+lune-std-task.workspace = true
 mlua.workspace = true
 mlua-luau-scheduler.workspace = true
 rbx_dom_weak.workspace = true
