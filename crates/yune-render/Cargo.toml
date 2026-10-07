@@ -12,4 +12,5 @@ glam.workspace = true
 image.workspace = true
 mlua.workspace = true
 rbx_dom_weak.workspace = true
+rbx_mesh.workspace = true
 lune-roblox.workspace = true
