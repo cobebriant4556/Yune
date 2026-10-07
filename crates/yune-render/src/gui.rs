@@ -7,8 +7,8 @@ use crate::{
     ImageBinding, RenderState,
     framebuffer::Framebuffer,
     props::{
-        bool_prop, color_prop, color_to_rgba, f32_prop, i32_prop, instance_key, ref_prop,
-        string_prop, udim2_prop, vec2_prop, vec3_prop,
+        bool_prop, color_prop, color_to_rgba, content_prop, enum_prop, f32_prop, i32_prop,
+        instance_key, ref_prop, string_prop, udim2_prop, vec2_prop, vec3_prop,
     },
     raster::{Lighting, RenderStats, render_world},
 };
@@ -165,18 +165,187 @@ fn draw_text(framebuffer: &mut Framebuffer, item: &DrawItem) {
 
 fn draw_image(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderState) {
     let key = instance_key(&item.instance);
-    let Some(binding) = state.image_binding(&key) else { return };
+    let binding = state.image_binding(&key).or_else(|| {
+        content_prop(&item.instance, "Image")
+            .and_then(|content_id| state.image_asset(&content_id))
+    });
+    let Some(binding) = binding else { return };
+
     let tint = color_prop(&item.instance, "ImageColor3", Vec3::ONE);
     let transparency = f32_prop(&item.instance, "ImageTransparency", 0.0).clamp(0.0, 1.0);
+    let rect_offset = vec2_prop(&item.instance, "ImageRectOffset", Vec2::ZERO);
+    let rect_size = vec2_prop(&item.instance, "ImageRectSize", Vec2::ZERO);
+    let scale_type = enum_prop(&item.instance, "ScaleType", 0);
+    let pixelated = enum_prop(&item.instance, "ResampleMode", 0) == 1;
+
     match binding {
-        ImageBinding::Pixels { width, height, pixels } => {
-            blit_scaled(framebuffer, item.rect, width, height, &pixels, tint, transparency);
-        }
+        ImageBinding::Pixels { width, height, pixels } => draw_image_pixels(
+            framebuffer,
+            item.rect,
+            width,
+            height,
+            &pixels,
+            tint,
+            transparency,
+            rect_offset,
+            rect_size,
+            scale_type,
+            pixelated,
+        ),
         ImageBinding::Editable(image) => {
             let image = image.snapshot();
-            blit_scaled(framebuffer, item.rect, image.width, image.height, &image.pixels, tint, transparency);
+            draw_image_pixels(
+                framebuffer,
+                item.rect,
+                image.width,
+                image.height,
+                &image.pixels,
+                tint,
+                transparency,
+                rect_offset,
+                rect_size,
+                scale_type,
+                pixelated,
+            );
         }
     }
+}
+
+fn draw_image_pixels(
+    framebuffer: &mut Framebuffer,
+    rect: Rect,
+    src_width: u32,
+    src_height: u32,
+    pixels: &[u8],
+    tint: Vec3,
+    transparency: f32,
+    rect_offset: Vec2,
+    rect_size: Vec2,
+    scale_type: u32,
+    pixelated: bool,
+) {
+    if src_width == 0 || src_height == 0 || rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+
+    let sx0 = rect_offset.x.max(0.0).min(src_width as f32);
+    let sy0 = rect_offset.y.max(0.0).min(src_height as f32);
+    let mut sw = if rect_size.x > 0.0 { rect_size.x } else { src_width as f32 - sx0 };
+    let mut sh = if rect_size.y > 0.0 { rect_size.y } else { src_height as f32 - sy0 };
+    sw = sw.max(1.0).min(src_width as f32 - sx0);
+    sh = sh.max(1.0).min(src_height as f32 - sy0);
+
+    let mut draw_rect = rect;
+    let source_aspect = sw / sh;
+    let target_aspect = rect.w / rect.h.max(0.0001);
+
+    if scale_type == 3 {
+        if target_aspect > source_aspect {
+            draw_rect.w = rect.h * source_aspect;
+            draw_rect.x = rect.x + (rect.w - draw_rect.w) * 0.5;
+        } else {
+            draw_rect.h = rect.w / source_aspect;
+            draw_rect.y = rect.y + (rect.h - draw_rect.h) * 0.5;
+        }
+    }
+
+    let mut crop_x = sx0;
+    let mut crop_y = sy0;
+    let mut crop_w = sw;
+    let mut crop_h = sh;
+    if scale_type == 4 {
+        if target_aspect > source_aspect {
+            crop_h = sw / target_aspect;
+            crop_y = sy0 + (sh - crop_h) * 0.5;
+        } else {
+            crop_w = sh * target_aspect;
+            crop_x = sx0 + (sw - crop_w) * 0.5;
+        }
+    }
+
+    let dst_w = draw_rect.w.round().max(1.0) as i32;
+    let dst_h = draw_rect.h.round().max(1.0) as i32;
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            let (u, v) = if scale_type == 2 {
+                (
+                    (dx as f32 / crop_w.max(1.0)).fract(),
+                    (dy as f32 / crop_h.max(1.0)).fract(),
+                )
+            } else {
+                (
+                    (dx as f32 + 0.5) / dst_w as f32,
+                    (dy as f32 + 0.5) / dst_h as f32,
+                )
+            };
+            let sx = crop_x + u * crop_w;
+            let sy = crop_y + v * crop_h;
+            let sample = sample_image(src_width, src_height, pixels, sx, sy, pixelated);
+            let rgba = [
+                (sample[0] * tint.x.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sample[1] * tint.y.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sample[2] * tint.z.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8,
+                (sample[3] * (1.0 - transparency) * 255.0).round().clamp(0.0, 255.0) as u8,
+            ];
+            framebuffer.blend_pixel(
+                draw_rect.x.round() as i32 + dx,
+                draw_rect.y.round() as i32 + dy,
+                rgba,
+            );
+        }
+    }
+}
+
+fn sample_image(
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+    x: f32,
+    y: f32,
+    pixelated: bool,
+) -> [f32; 4] {
+    if pixelated {
+        return pixel_at(
+            width,
+            height,
+            pixels,
+            x.floor() as i32,
+            y.floor() as i32,
+        );
+    }
+
+    let x = x - 0.5;
+    let y = y - 0.5;
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let a = pixel_at(width, height, pixels, x0, y0);
+    let b = pixel_at(width, height, pixels, x0 + 1, y0);
+    let c = pixel_at(width, height, pixels, x0, y0 + 1);
+    let d = pixel_at(width, height, pixels, x0 + 1, y0 + 1);
+    let mut out = [0.0; 4];
+    for channel in 0..4 {
+        let top = a[channel] + (b[channel] - a[channel]) * tx;
+        let bottom = c[channel] + (d[channel] - c[channel]) * tx;
+        out[channel] = top + (bottom - top) * ty;
+    }
+    out
+}
+
+fn pixel_at(width: u32, height: u32, pixels: &[u8], x: i32, y: i32) -> [f32; 4] {
+    let x = x.clamp(0, width as i32 - 1) as usize;
+    let y = y.clamp(0, height as i32 - 1) as usize;
+    let index = (y * width as usize + x) * 4;
+    if index + 3 >= pixels.len() {
+        return [0.0; 4];
+    }
+    [
+        pixels[index] as f32 / 255.0,
+        pixels[index + 1] as f32 / 255.0,
+        pixels[index + 2] as f32 / 255.0,
+        pixels[index + 3] as f32 / 255.0,
+    ]
 }
 
 fn draw_viewport(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderState, stats: &mut GuiStats) {
@@ -206,39 +375,6 @@ fn draw_viewport(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderS
     stats.viewport_parts += parts;
     stats.viewport_triangles += triangles;
     framebuffer.composite(&target, item.rect.x.round() as i32, item.rect.y.round() as i32);
-}
-
-fn blit_scaled(
-    framebuffer: &mut Framebuffer,
-    rect: Rect,
-    src_width: u32,
-    src_height: u32,
-    pixels: &[u8],
-    tint: Vec3,
-    transparency: f32,
-) {
-    if src_width == 0 || src_height == 0 || rect.w <= 0.0 || rect.h <= 0.0 {
-        return;
-    }
-    let dst_w = rect.w.round().max(1.0) as i32;
-    let dst_h = rect.h.round().max(1.0) as i32;
-    for dy in 0..dst_h {
-        let sy = ((dy as f32 / dst_h as f32) * src_height as f32).floor().min(src_height as f32 - 1.0) as u32;
-        for dx in 0..dst_w {
-            let sx = ((dx as f32 / dst_w as f32) * src_width as f32).floor().min(src_width as f32 - 1.0) as u32;
-            let i = (sy as usize * src_width as usize + sx as usize) * 4;
-            if i + 3 >= pixels.len() {
-                continue;
-            }
-            let rgba = [
-                ((pixels[i] as f32 * tint.x.clamp(0.0, 1.0)).round()).clamp(0.0, 255.0) as u8,
-                ((pixels[i + 1] as f32 * tint.y.clamp(0.0, 1.0)).round()).clamp(0.0, 255.0) as u8,
-                ((pixels[i + 2] as f32 * tint.z.clamp(0.0, 1.0)).round()).clamp(0.0, 255.0) as u8,
-                ((pixels[i + 3] as f32 * (1.0 - transparency)).round()).clamp(0.0, 255.0) as u8,
-            ];
-            framebuffer.blend_pixel(rect.x.round() as i32 + dx, rect.y.round() as i32 + dy, rgba);
-        }
-    }
 }
 
 fn fill_rect(framebuffer: &mut Framebuffer, rect: Rect, color: [u8; 4]) {
