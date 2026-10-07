@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -20,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run --release -- run examples/render_smoke.luau
+      - run: cargo run -- run examples/render_smoke.luau
       - uses: actions/upload-artifact@v4
         with:
           name: yune-smoke-frame
