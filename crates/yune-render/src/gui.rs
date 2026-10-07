@@ -187,9 +187,20 @@ fn draw_viewport(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderS
     target.clear([0, 0, 0, 0]);
     let lighting = Lighting {
         ambient: color_prop(&item.instance, "Ambient", Vec3::new(0.5, 0.5, 0.5)),
+        outdoor_ambient: color_prop(
+            &item.instance,
+            "Ambient",
+            Vec3::new(0.5, 0.5, 0.5),
+        ),
         light_color: color_prop(&item.instance, "LightColor", Vec3::ONE),
-        light_direction: vec3_prop(&item.instance, "LightDirection", Vec3::new(-1.0, -1.0, -1.0)).normalize_or_zero(),
+        light_direction: vec3_prop(
+            &item.instance,
+            "LightDirection",
+            Vec3::new(-1.0, -1.0, -1.0),
+        )
+        .normalize_or_zero(),
         brightness: 1.0,
+        ..Lighting::default()
     };
     let RenderStats { parts, triangles } = render_world(&mut target, item.instance, camera, state, lighting);
     stats.viewport_parts += parts;
