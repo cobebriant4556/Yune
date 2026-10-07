@@ -1,5 +1,26 @@
 local runtime = require("@yune/runtime")
 
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local replicatedFirst = game:GetService("ReplicatedFirst")
+
+local module = Instance.new("ModuleScript")
+module.Name = "RuntimeSmokeModule"
+module.Source = "return { value = 41 }"
+module.Parent = replicatedStorage
+
+local localScript = Instance.new("LocalScript")
+localScript.Name = "RuntimeSmokeScript"
+localScript.Source = [[
+assert(script.Name == "RuntimeSmokeScript")
+local module = require(game:GetService("ReplicatedStorage").RuntimeSmokeModule)
+_G.YUNE_SCRIPT_CONTEXT_SMOKE = module.value + 1
+]]
+localScript.Parent = replicatedFirst
+
+runtime.step(1 / 60)
+task.wait()
+assert(_G.YUNE_SCRIPT_CONTEXT_SMOKE == 42, "ScriptContext/ModuleScript lifecycle did not run")
+
 local ground = Instance.new("Part")
 ground.Name = "Ground"
 ground.Anchored = true
