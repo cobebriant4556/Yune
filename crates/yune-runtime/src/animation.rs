@@ -59,6 +59,10 @@ impl TrackData {
             self.fade_elapsed = (self.fade_elapsed + dt).min(self.fade_duration);
             let alpha = self.fade_elapsed / self.fade_duration;
             self.weight = self.fade_start + (self.target_weight - self.fade_start) * alpha;
+            if self.fade_duration - self.fade_elapsed <= 1e-6 {
+                self.fade_elapsed = self.fade_duration;
+                self.weight = self.target_weight;
+            }
         }
         if self.fading_out && self.weight <= f32::EPSILON { self.fading_out = false; }
     }
@@ -113,11 +117,11 @@ impl AnimationSystem {
     pub fn step(&mut self, workspace: Instance, dt: f64) {
         if !dt.is_finite() || dt < 0.0 { return; }
         let live = workspace.get_descendants_preorder().into_iter().map(|instance| (instance_key(&instance), instance)).collect::<HashMap<_, _>>();
-        for (key, expected) in self.previous.drain() {
+        // Only release joints this Animator layer actually wrote on its previous evaluation.
+        // Comparing floating-point matrices here can leave the final pose latched after a fade.
+        for (key, _) in self.previous.drain() {
             if let Some(motor) = live.get(&key) {
-                if cframe_prop(motor, "Transform").abs_diff_eq(expected, 1e-6) {
-                    motor.set_property("Transform", Variant::CFrame(DomCFrame::from(CFrame(Mat4::IDENTITY))));
-                }
+                motor.set_property("Transform", Variant::CFrame(DomCFrame::from(CFrame(Mat4::IDENTITY))));
             }
         }
         self.tracks.retain(|track| {
