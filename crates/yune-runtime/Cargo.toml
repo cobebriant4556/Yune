@@ -12,3 +12,4 @@ lune-roblox.workspace = true
 mlua.workspace = true
 rbx_dom_weak.workspace = true
 yune-render.workspace = true
+yune-physics.workspace = true
