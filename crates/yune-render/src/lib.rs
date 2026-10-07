@@ -218,7 +218,17 @@ fn capture(
     let mut lighting = Lighting::default();
     if let Some(lighting_inst) = lighting_instance {
         lighting.ambient = color_prop(&lighting_inst, "Ambient", lighting.ambient);
-        lighting.brightness = props::f32_prop(&lighting_inst, "Brightness", lighting.brightness).max(0.0);
+        lighting.outdoor_ambient =
+            color_prop(&lighting_inst, "OutdoorAmbient", lighting.outdoor_ambient);
+        lighting.brightness =
+            props::f32_prop(&lighting_inst, "Brightness", lighting.brightness).max(0.0);
+        lighting.exposure =
+            props::f32_prop(&lighting_inst, "ExposureCompensation", lighting.exposure);
+        lighting.fog_color = color_prop(&lighting_inst, "FogColor", lighting.fog_color);
+        lighting.fog_start =
+            props::f32_prop(&lighting_inst, "FogStart", lighting.fog_start).max(0.0);
+        lighting.fog_end =
+            props::f32_prop(&lighting_inst, "FogEnd", lighting.fog_end).max(lighting.fog_start);
     }
     if let LuaValue::UserData(direction) = options.get::<LuaValue>("lightDirection")?
         && let Ok(direction) = direction.borrow::<Vector3>()
