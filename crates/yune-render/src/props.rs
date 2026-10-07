@@ -105,7 +105,7 @@ pub fn enum_prop(instance: &Instance, name: &str, default: u32) -> u32 {
 
 pub fn content_prop(instance: &Instance, name: &str) -> Option<String> {
     match instance.get_property(name) {
-        Some(Variant::ContentId(value)) => Some(value.to_string()),
+        Some(Variant::ContentId(value)) => Some(AsRef::<str>::as_ref(&value).to_string()),
         Some(Variant::String(value)) => Some(value),
         _ => None,
     }
