@@ -1,19 +1,25 @@
+mod animation;
+mod joints;
 mod signal;
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs,
     rc::Rc,
 };
 
 use lune_roblox::{
+    datatypes::types::Vector3,
     document::{Document, DocumentKind},
     instance::{Instance, instance_to_lua, registry::InstanceRegistry},
 };
 use mlua::prelude::*;
 use rbx_dom_weak::types::{Color3 as DomColor3, Variant};
 
+use animation::AnimationSystem;
+use joints::JointSystem;
 use signal::Signal;
+use yune_physics::PhysicsWorld;
 
 #[derive(Clone, Default)]
 struct FrameSignals {
@@ -33,15 +39,19 @@ struct RuntimeState {
     signals: FrameSignals,
     time: Rc<Cell<f64>>,
     frame: Rc<Cell<u64>>,
-    render_state: yune_render::RenderState,
+    physics: Rc<RefCell<PhysicsWorld>>,
+    joints: Rc<RefCell<JointSystem>>,
+    animations: Rc<RefCell<AnimationSystem>>,
 }
 
 pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     inject_roblox_globals(lua)?;
 
     let render_state = yune_render::RenderState::default();
-    let state = bootstrap(lua, render_state.clone())?;
+    let state = bootstrap(lua)?;
     install_run_service(lua, &state)?;
+    install_physics_api(lua, state.physics.clone())?;
+    AnimationSystem::install(lua, state.animations.clone())?;
 
     let render_module =
         yune_render::install_into(lua, render_state, state.game, state.workspace)?;
@@ -117,7 +127,7 @@ fn inject_roblox_globals(lua: &Lua) -> LuaResult<()> {
     Ok(())
 }
 
-fn bootstrap(lua: &Lua, render_state: yune_render::RenderState) -> LuaResult<RuntimeState> {
+fn bootstrap(lua: &Lua) -> LuaResult<RuntimeState> {
     let game = Instance::new_orphaned("DataModel");
     game.set_name("Game");
     game.set_property("PlaceId", Variant::Int64(0));
@@ -185,6 +195,7 @@ fn bootstrap(lua: &Lua, render_state: yune_render::RenderState) -> LuaResult<Run
     camera.set_parent(Some(workspace));
     workspace.set_property("CurrentCamera", Variant::Ref(camera.dom_ref));
     workspace.set_property("DistributedGameTime", Variant::Float64(0.0));
+    workspace.set_property("Gravity", Variant::Float32(196.2));
 
     lua.globals().set("game", instance_to_lua(lua, game)?)?;
     lua.globals()
@@ -197,7 +208,9 @@ fn bootstrap(lua: &Lua, render_state: yune_render::RenderState) -> LuaResult<Run
         signals: FrameSignals::default(),
         time: Rc::new(Cell::new(0.0)),
         frame: Rc::new(Cell::new(0)),
-        render_state,
+        physics: Rc::new(RefCell::new(PhysicsWorld::default())),
+        joints: Rc::new(RefCell::new(JointSystem::default())),
+        animations: Rc::new(RefCell::new(AnimationSystem::default())),
     })
 }
 
@@ -265,6 +278,89 @@ fn install_signal_getter(lua: &Lua, name: &str, signal: Signal) -> LuaResult<()>
         .map_err(LuaError::external)
 }
 
+
+#[derive(Clone, Copy)]
+struct LuaRaycastResult {
+    instance: Instance,
+    position: glam::Vec3,
+    normal: glam::Vec3,
+    distance: f32,
+}
+
+impl LuaUserData for LuaRaycastResult {
+    fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("Instance", |lua, this| {
+            instance_to_lua(lua, this.instance)
+        });
+        fields.add_field_method_get("Position", |_, this| Ok(Vector3(this.position)));
+        fields.add_field_method_get("Normal", |_, this| Ok(Vector3(this.normal)));
+        fields.add_field_method_get("Distance", |_, this| Ok(this.distance));
+    }
+}
+
+fn install_physics_api(lua: &Lua, physics: Rc<RefCell<PhysicsWorld>>) -> LuaResult<()> {
+    let impulse_physics = physics.clone();
+    let apply_impulse = lua.create_function(
+        move |_, (part, impulse): (LuaUserDataRef<Instance>, LuaUserDataRef<Vector3>)| {
+            impulse_physics
+                .borrow_mut()
+                .apply_impulse(*part, impulse.0);
+            Ok(())
+        },
+    )?;
+    InstanceRegistry::insert_method(lua, "BasePart", "ApplyImpulse", apply_impulse)
+        .map_err(LuaError::external)?;
+
+    let angular_physics = physics.clone();
+    let apply_angular = lua.create_function(
+        move |_, (part, impulse): (LuaUserDataRef<Instance>, LuaUserDataRef<Vector3>)| {
+            angular_physics
+                .borrow_mut()
+                .apply_angular_impulse(*part, impulse.0);
+            Ok(())
+        },
+    )?;
+    InstanceRegistry::insert_method(
+        lua,
+        "BasePart",
+        "ApplyAngularImpulse",
+        apply_angular,
+    )
+    .map_err(LuaError::external)?;
+
+    let mass_physics = physics.clone();
+    let get_mass = lua.create_function(move |_, part: LuaUserDataRef<Instance>| {
+        Ok(mass_physics.borrow().mass(*part))
+    })?;
+    InstanceRegistry::insert_method(lua, "BasePart", "GetMass", get_mass)
+        .map_err(LuaError::external)?;
+
+    let ray_physics = physics;
+    let raycast = lua.create_function(
+        move |_, (_workspace, origin, direction, _params): (
+            LuaUserDataRef<Instance>,
+            LuaUserDataRef<Vector3>,
+            LuaUserDataRef<Vector3>,
+            Option<LuaValue>,
+        )| {
+            let max_distance = direction.0.length();
+            Ok(ray_physics
+                .borrow()
+                .raycast(origin.0, direction.0, max_distance)
+                .map(|hit| LuaRaycastResult {
+                    instance: hit.instance,
+                    position: hit.position,
+                    normal: hit.normal,
+                    distance: hit.distance,
+                }))
+        },
+    )?;
+    InstanceRegistry::insert_method(lua, "Workspace", "Raycast", raycast)
+        .map_err(LuaError::external)?;
+
+    Ok(())
+}
+
 fn step_runtime(state: &RuntimeState, dt: f64) -> LuaResult<()> {
     let dt = dt.max(0.0);
     let old_time = state.time.get();
@@ -282,6 +378,12 @@ fn step_runtime(state: &RuntimeState, dt: f64) -> LuaResult<()> {
 
     state.signals.stepped.fire2(old_time, dt)?;
     state.signals.pre_simulation.fire1(dt)?;
+
+    state.animations.borrow_mut().step(state.workspace, dt);
+    state.joints.borrow_mut().solve(state.workspace);
+    state.physics.borrow_mut().step(state.workspace, dt);
+    state.joints.borrow_mut().solve(state.workspace);
+
     state.signals.post_simulation.fire1(dt)?;
     state.signals.heartbeat.fire1(dt)?;
     state.signals.pre_render.fire1(dt)?;
