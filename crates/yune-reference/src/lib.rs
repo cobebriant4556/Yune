@@ -33,7 +33,7 @@ pub fn locate_studio() -> Result<PathBuf> {
         let versions = PathBuf::from(local_app_data).join("Roblox").join("Versions");
         let mut candidates = fs::read_dir(&versions)
             .with_context(|| format!("failed to read {}", versions.display()))?
-            .filter_map(Result::ok)
+            .filter_map(|entry| entry.ok())
             .map(|entry| entry.path().join("RobloxStudioBeta.exe"))
             .filter(|path| path.is_file())
             .collect::<Vec<_>>();
