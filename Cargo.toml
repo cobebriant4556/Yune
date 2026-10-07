@@ -16,6 +16,7 @@ font8x8 = "0.3"
 glam = "0.33"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mlua = { version = "0.11.6", features = ["luau"] }
+mlua-luau-scheduler = { path = "upstream/lune/crates/mlua-luau-scheduler" }
 rbx_dom_weak = "4.0"
 rbx_mesh = { version = "0.8.0", default-features = false, features = ["mesh", "mesh-v1"] }
 rapier3d = "0.35.3"
