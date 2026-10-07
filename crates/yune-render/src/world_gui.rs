@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use lune_roblox::{
     datatypes::types::CFrame,
@@ -6,11 +8,12 @@ use lune_roblox::{
 use rbx_dom_weak::types::Variant;
 
 use crate::{
-    RenderState,
+    ImageBinding, RenderState,
     framebuffer::Framebuffer,
     gui::{GuiStats, Rect, render_gui_in_rect},
     props::{
-        bool_prop, cframe_prop, enum_prop, f32_prop, ref_prop, udim2_prop, vec2_prop, vec3_prop,
+        bool_prop, cframe_prop, color_prop, content_prop, enum_prop, f32_prop, ref_prop,
+        udim2_prop, vec2_prop, vec3_prop,
     },
 };
 
@@ -30,6 +33,12 @@ pub fn render_world_guis(
 ) -> GuiStats {
     let mut total = GuiStats::default();
 
+    for surface in world.get_descendants_preorder() {
+        if matches!(surface.get_class_name(), "Decal" | "Texture") {
+            render_part_image(framebuffer, surface, camera, state);
+        }
+    }
+
     for gui in world.get_descendants_preorder() {
         let stats = match gui.get_class_name() {
             "BillboardGui" => render_billboard(framebuffer, gui, camera, state),
@@ -43,6 +52,261 @@ pub fn render_world_guis(
 
     total
 }
+
+#[derive(Clone)]
+struct ImageSurface {
+    width: u32,
+    height: u32,
+    pixels: Arc<Vec<u8>>,
+}
+
+fn render_part_image(
+    framebuffer: &mut Framebuffer,
+    image_instance: Instance,
+    camera: Instance,
+    state: &RenderState,
+) {
+    let Some(parent) = image_instance.get_parent() else {
+        return;
+    };
+    if !parent.is_a("BasePart") {
+        return;
+    }
+
+    let Some(content_id) = content_prop(&image_instance, "Texture") else {
+        return;
+    };
+    let Some(binding) = state.image_asset(&content_id) else {
+        return;
+    };
+    let image = image_surface(binding);
+    let tint = color_prop(&image_instance, "Color3", Vec3::ONE);
+    let transparency = f32_prop(&image_instance, "Transparency", 0.0).clamp(0.0, 1.0);
+    let face = enum_prop(&image_instance, "Face", 5);
+    let part_size = vec3_prop(&parent, "Size", Vec3::ONE);
+    let face_size = surface_face_size(part_size, face);
+
+    let (uv0, uv1) = if image_instance.get_class_name() == "Texture" {
+        let studs_u = f32_prop(&image_instance, "StudsPerTileU", 2.0).abs().max(0.001);
+        let studs_v = f32_prop(&image_instance, "StudsPerTileV", 2.0).abs().max(0.001);
+        let offset_u = f32_prop(&image_instance, "OffsetStudsU", 0.0) / studs_u;
+        let offset_v = f32_prop(&image_instance, "OffsetStudsV", 0.0) / studs_v;
+        (
+            Vec2::new(offset_u, offset_v),
+            Vec2::new(
+                offset_u + face_size.x / studs_u,
+                offset_v + face_size.y / studs_v,
+            ),
+        )
+    } else {
+        (Vec2::ZERO, Vec2::ONE)
+    };
+
+    let transform = cframe_prop(&parent, "CFrame", Mat4::IDENTITY);
+    let corners =
+        surface_face_corners(part_size, face).map(|point| transform.transform_point3(point));
+
+    draw_image_quad(
+        framebuffer,
+        camera,
+        corners,
+        &image,
+        [
+            Vec2::new(uv0.x, uv0.y),
+            Vec2::new(uv1.x, uv0.y),
+            Vec2::new(uv1.x, uv1.y),
+            Vec2::new(uv0.x, uv1.y),
+        ],
+        tint,
+        transparency,
+        image_instance.get_class_name() == "Texture",
+    );
+}
+
+fn image_surface(binding: ImageBinding) -> ImageSurface {
+    match binding {
+        ImageBinding::Pixels {
+            width,
+            height,
+            pixels,
+        } => ImageSurface {
+            width,
+            height,
+            pixels,
+        },
+        ImageBinding::Editable(image) => {
+            let image = image.snapshot();
+            ImageSurface {
+                width: image.width,
+                height: image.height,
+                pixels: Arc::new(image.pixels),
+            }
+        }
+    }
+}
+
+fn draw_image_quad(
+    framebuffer: &mut Framebuffer,
+    camera: Instance,
+    corners: [Vec3; 4],
+    image: &ImageSurface,
+    uvs: [Vec2; 4],
+    tint: Vec3,
+    transparency: f32,
+    repeat: bool,
+) {
+    let Some(a) = project(framebuffer, camera, corners[0]) else {
+        return;
+    };
+    let Some(b) = project(framebuffer, camera, corners[1]) else {
+        return;
+    };
+    let Some(c) = project(framebuffer, camera, corners[2]) else {
+        return;
+    };
+    let Some(d) = project(framebuffer, camera, corners[3]) else {
+        return;
+    };
+
+    draw_image_triangle(
+        framebuffer,
+        [a, b, c],
+        [uvs[0], uvs[1], uvs[2]],
+        image,
+        tint,
+        transparency,
+        repeat,
+    );
+    draw_image_triangle(
+        framebuffer,
+        [a, c, d],
+        [uvs[0], uvs[2], uvs[3]],
+        image,
+        tint,
+        transparency,
+        repeat,
+    );
+}
+
+fn draw_image_triangle(
+    framebuffer: &mut Framebuffer,
+    vertices: [Projected; 3],
+    uvs: [Vec2; 3],
+    image: &ImageSurface,
+    tint: Vec3,
+    transparency: f32,
+    repeat: bool,
+) {
+    let area = edge(vertices[0], vertices[1], vertices[2].x, vertices[2].y);
+    if area.abs() <= 0.0001 {
+        return;
+    }
+
+    let min_x = vertices
+        .iter()
+        .map(|vertex| vertex.x)
+        .fold(f32::INFINITY, f32::min)
+        .floor()
+        .max(0.0) as i32;
+    let max_x = vertices
+        .iter()
+        .map(|vertex| vertex.x)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil()
+        .min(framebuffer.width as f32 - 1.0) as i32;
+    let min_y = vertices
+        .iter()
+        .map(|vertex| vertex.y)
+        .fold(f32::INFINITY, f32::min)
+        .floor()
+        .max(0.0) as i32;
+    let max_y = vertices
+        .iter()
+        .map(|vertex| vertex.y)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil()
+        .min(framebuffer.height as f32 - 1.0) as i32;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let weights = [
+                edge(vertices[1], vertices[2], px, py) / area,
+                edge(vertices[2], vertices[0], px, py) / area,
+                edge(vertices[0], vertices[1], px, py) / area,
+            ];
+            if weights.iter().any(|weight| *weight < 0.0) {
+                continue;
+            }
+
+            let depth = weights[0] * vertices[0].depth
+                + weights[1] * vertices[1].depth
+                + weights[2] * vertices[2].depth;
+            let depth_index = y as usize * framebuffer.width as usize + x as usize;
+            if depth > framebuffer.depth[depth_index] + 0.001 {
+                continue;
+            }
+
+            let reciprocal = [
+                weights[0] * vertices[0].inv_w,
+                weights[1] * vertices[1].inv_w,
+                weights[2] * vertices[2].inv_w,
+            ];
+            let denominator = reciprocal[0] + reciprocal[1] + reciprocal[2];
+            if denominator.abs() <= f32::EPSILON {
+                continue;
+            }
+
+            let uv = (uvs[0] * reciprocal[0]
+                + uvs[1] * reciprocal[1]
+                + uvs[2] * reciprocal[2])
+                / denominator;
+            let sample = sample_image_surface(image, uv, repeat);
+            framebuffer.blend_pixel(
+                x,
+                y,
+                [
+                    (sample.x * tint.x.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (sample.y * tint.y.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (sample.z * tint.z.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    (sample.w * (1.0 - transparency) * 255.0).round() as u8,
+                ],
+            );
+        }
+    }
+}
+
+fn sample_image_surface(image: &ImageSurface, uv: Vec2, repeat: bool) -> Vec4 {
+    if image.width == 0 || image.height == 0 || image.pixels.is_empty() {
+        return Vec4::ONE;
+    }
+
+    let u = if repeat {
+        uv.x.rem_euclid(1.0)
+    } else {
+        uv.x.clamp(0.0, 1.0)
+    };
+    let v = if repeat {
+        uv.y.rem_euclid(1.0)
+    } else {
+        uv.y.clamp(0.0, 1.0)
+    };
+    let x = (u * image.width.saturating_sub(1) as f32).round() as usize;
+    let y = (v * image.height.saturating_sub(1) as f32).round() as usize;
+    let index = (y * image.width as usize + x) * 4;
+    if index + 3 >= image.pixels.len() {
+        return Vec4::ONE;
+    }
+
+    Vec4::new(
+        image.pixels[index] as f32 / 255.0,
+        image.pixels[index + 1] as f32 / 255.0,
+        image.pixels[index + 2] as f32 / 255.0,
+        image.pixels[index + 3] as f32 / 255.0,
+    )
+}
+
 
 fn render_billboard(
     framebuffer: &mut Framebuffer,
