@@ -2,10 +2,11 @@ mod editable_image;
 mod editable_mesh;
 mod framebuffer;
 mod gui;
+mod mesh_asset;
 mod props;
 mod raster;
 
-use std::{collections::HashMap, path::Path, sync::{Arc, Mutex}};
+use std::{collections::HashMap, fs, path::Path, sync::{Arc, Mutex}};
 
 use glam::{Vec2, Vec3};
 use image::ImageReader;
@@ -20,6 +21,7 @@ pub use editable_image::EditableImage;
 pub use editable_mesh::EditableMesh;
 use framebuffer::Framebuffer;
 use gui::render_gui;
+use mesh_asset::StaticMesh;
 use props::{color_prop, instance_key};
 use raster::{Lighting, render_world};
 
@@ -32,6 +34,7 @@ pub enum ImageBinding {
 #[derive(Clone, Default)]
 pub struct RenderState {
     meshes: Arc<Mutex<HashMap<String, EditableMesh>>>,
+    mesh_assets: Arc<Mutex<HashMap<String, Arc<StaticMesh>>>>,
     images: Arc<Mutex<HashMap<String, ImageBinding>>>,
 }
 
@@ -42,6 +45,21 @@ impl RenderState {
 
     pub(crate) fn mesh_binding(&self, key: &str) -> Option<EditableMesh> {
         self.meshes.lock().expect("mesh binding lock poisoned").get(key).cloned()
+    }
+
+    fn register_mesh_asset(&self, content_id: String, mesh: StaticMesh) {
+        self.mesh_assets
+            .lock()
+            .expect("mesh asset lock poisoned")
+            .insert(content_id, Arc::new(mesh));
+    }
+
+    pub(crate) fn mesh_asset(&self, content_id: &str) -> Option<Arc<StaticMesh>> {
+        self.mesh_assets
+            .lock()
+            .expect("mesh asset lock poisoned")
+            .get(content_id)
+            .cloned()
     }
 
     fn bind_image(&self, key: String, image: ImageBinding) {
@@ -74,6 +92,17 @@ pub fn install_into(
         "bindEditableMesh",
         lua.create_function(move |_, (instance, mesh): (LuaUserDataRef<Instance>, LuaUserDataRef<EditableMesh>)| {
             bind_mesh_state.bind_mesh(instance_key(&instance), mesh.clone());
+            Ok(())
+        })?,
+    )?;
+
+    let register_mesh_state = state.clone();
+    module.set(
+        "registerMesh",
+        lua.create_function(move |_, (content_id, path): (String, String)| {
+            let bytes = fs::read(&path).map_err(LuaError::external)?;
+            let mesh = StaticMesh::from_bytes(&bytes).map_err(LuaError::external)?;
+            register_mesh_state.register_mesh_asset(content_id, mesh);
             Ok(())
         })?,
     )?;
