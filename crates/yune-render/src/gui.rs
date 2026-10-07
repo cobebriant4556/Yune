@@ -195,12 +195,14 @@ fn draw_vector_text(framebuffer: &mut Framebuffer, item: &DrawItem, font: &fontd
                     None => (min, max),
                 })
             });
-        let width = bounds.map_or(0.0, |(min, max)| max - min);
-        match x_alignment {
+        let (min_x, max_x) = bounds.unwrap_or((item.rect.x, item.rect.x));
+        let width = max_x - min_x;
+        let target_x = match x_alignment {
             0 => item.rect.x,
             1 => item.rect.x + item.rect.w - width,
             _ => item.rect.x + (item.rect.w - width) * 0.5,
-        }
+        };
+        target_x - min_x
     };
 
     for glyph in layout.glyphs() {
