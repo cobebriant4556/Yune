@@ -56,6 +56,15 @@ impl RenderState {
 pub fn install(lua: &Lua, state: RenderState) -> LuaResult<LuaValue> {
     inject_roblox_globals(lua)?;
     let (game, workspace) = create_data_model(lua)?;
+    install_into(lua, state, game, workspace)
+}
+
+pub fn install_into(
+    lua: &Lua,
+    state: RenderState,
+    game: Instance,
+    workspace: Instance,
+) -> LuaResult<LuaValue> {
     install_asset_service(lua)?;
 
     let module = lua.create_table()?;
@@ -108,7 +117,7 @@ pub fn install(lua: &Lua, state: RenderState) -> LuaResult<LuaValue> {
     )?;
 
     module.set("version", "0.1.0")?;
-    lua.globals().set("Yune", module.clone())?;
+    lua.globals().set("YuneRender", module.clone())?;
     Ok(LuaValue::Table(module))
 }
 
