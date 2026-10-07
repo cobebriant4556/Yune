@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use rbx_mesh::{
     mesh::{Face2, Mesh, Vertices2},
     read_mesh_versioned,
@@ -9,6 +9,8 @@ use rbx_mesh::{
 #[derive(Debug, Clone)]
 pub struct StaticMesh {
     pub vertices: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub uvs: Vec<Vec2>,
     pub triangles: Vec<[u32; 3]>,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
@@ -17,12 +19,22 @@ pub struct StaticMesh {
 impl StaticMesh {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, rbx_mesh::mesh::Error> {
         let mesh = read_mesh_versioned(Cursor::new(bytes))?;
-        let (vertices, triangles) = match mesh {
+        let (vertices, normals, uvs, triangles) = match mesh {
             Mesh::V1(mesh) => {
                 let vertices = mesh
                     .vertices
                     .iter()
                     .map(|vertex| Vec3::from_array(vertex.pos))
+                    .collect::<Vec<_>>();
+                let normals = mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| Vec3::from_array(vertex.norm))
+                    .collect::<Vec<_>>();
+                let uvs = mesh
+                    .vertices
+                    .iter()
+                    .map(|vertex| Vec2::new(vertex.tex[0], vertex.tex[1]))
                     .collect::<Vec<_>>();
                 let triangles = (0..vertices.len() / 3)
                     .map(|face| {
@@ -30,14 +42,28 @@ impl StaticMesh {
                         [base, base + 1, base + 2]
                     })
                     .collect();
-                (vertices, triangles)
+                (vertices, normals, uvs, triangles)
             }
-            Mesh::V2(mesh) => (vertices2(&mesh.vertices), faces2(&mesh.faces)),
-            Mesh::V3(mesh) => (vertices2(&mesh.vertices), faces2(&mesh.faces)),
+            Mesh::V2(mesh) => {
+                let (vertices, normals, uvs) = vertices2(&mesh.vertices);
+                (vertices, normals, uvs, faces2(&mesh.faces))
+            }
+            Mesh::V3(mesh) => {
+                let (vertices, normals, uvs) = vertices2(&mesh.vertices);
+                (vertices, normals, uvs, faces2(&mesh.faces))
+            }
             Mesh::V4(mesh) => (
                 mesh.vertices
                     .iter()
                     .map(|vertex| Vec3::from_array(vertex.pos))
+                    .collect(),
+                mesh.vertices
+                    .iter()
+                    .map(|vertex| Vec3::from_array(vertex.norm))
+                    .collect(),
+                mesh.vertices
+                    .iter()
+                    .map(|vertex| Vec2::new(vertex.tex[0], vertex.tex[1]))
                     .collect(),
                 faces2(&mesh.faces),
             ),
@@ -45,6 +71,14 @@ impl StaticMesh {
                 mesh.vertices
                     .iter()
                     .map(|vertex| Vec3::from_array(vertex.pos))
+                    .collect(),
+                mesh.vertices
+                    .iter()
+                    .map(|vertex| Vec3::from_array(vertex.norm))
+                    .collect(),
+                mesh.vertices
+                    .iter()
+                    .map(|vertex| Vec2::new(vertex.tex[0], vertex.tex[1]))
                     .collect(),
                 faces2(&mesh.faces),
             ),
@@ -63,6 +97,8 @@ impl StaticMesh {
 
         Ok(Self {
             vertices,
+            normals,
+            uvs,
             triangles,
             bounds_min,
             bounds_max,
@@ -78,16 +114,36 @@ impl StaticMesh {
     }
 }
 
-fn vertices2(vertices: &Vertices2) -> Vec<Vec3> {
+fn vertices2(vertices: &Vertices2) -> (Vec<Vec3>, Vec<Vec3>, Vec<Vec2>) {
     match vertices {
-        Vertices2::Full(vertices) => vertices
-            .iter()
-            .map(|vertex| Vec3::from_array(vertex.pos))
-            .collect(),
-        Vertices2::Truncated(vertices) => vertices
-            .iter()
-            .map(|vertex| Vec3::from_array(vertex.pos))
-            .collect(),
+        Vertices2::Full(vertices) => (
+            vertices
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.pos))
+                .collect(),
+            vertices
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.norm))
+                .collect(),
+            vertices
+                .iter()
+                .map(|vertex| Vec2::new(vertex.tex[0], vertex.tex[1]))
+                .collect(),
+        ),
+        Vertices2::Truncated(vertices) => (
+            vertices
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.pos))
+                .collect(),
+            vertices
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.norm))
+                .collect(),
+            vertices
+                .iter()
+                .map(|vertex| Vec2::new(vertex.tex[0], vertex.tex[1]))
+                .collect(),
+        ),
     }
 }
 
