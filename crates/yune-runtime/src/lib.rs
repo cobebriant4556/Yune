@@ -50,6 +50,8 @@ struct RuntimeState {
 
 pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     inject_roblox_globals(lua)?;
+    lua.globals()
+        .set("task", lune_std_task::module(lua.clone())?)?;
 
     let render_state = yune_render::RenderState::default();
     let scripts = Rc::new(RefCell::new(ScriptContext::default()));
