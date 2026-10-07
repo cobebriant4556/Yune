@@ -17,6 +17,7 @@ glam = "0.33"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 mlua = { version = "0.11.6", features = ["luau"] }
 rbx_dom_weak = "4.0"
+rbx_mesh = { version = "0.8.0", default-features = false, features = ["mesh", "mesh-v1"] }
 rapier3d = "0.35.3"
 lune = { path = "upstream/lune/crates/lune" }
 lune-roblox = { path = "upstream/lune/crates/lune-roblox" }
