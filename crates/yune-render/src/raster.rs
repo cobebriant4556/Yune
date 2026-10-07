@@ -111,7 +111,72 @@ pub fn render_world(
         let response = material_response(material);
         let key = instance_key(&instance);
 
-        if let Some(mesh) = state.mesh_binding(&key) {
+        if let Some(special) = instance
+            .get_children()
+            .into_iter()
+            .find(|child| child.get_class_name() == "SpecialMesh")
+            && enum_prop(&special, "MeshType", 0) == 5
+            && let Some(mesh_id) = content_prop(&special, "MeshId")
+            && let Some(mesh) = state.mesh_asset(&mesh_id)
+        {
+            let mesh_scale = vec3_prop(&special, "Scale", Vec3::ONE);
+            let offset = vec3_prop(&special, "Offset", Vec3::ZERO);
+            let vertex_color = vec3_prop(&special, "VertexColor", Vec3::ONE);
+            let texture_id = content_prop(&special, "TextureId")
+                .or_else(|| content_prop(&special, "TextureID"));
+            let maps = SurfaceMaps {
+                color: texture_id
+                    .and_then(|id| state.image_asset(&id))
+                    .map(texture_pixels),
+                ..SurfaceMaps::default()
+            };
+
+            for triangle in &mesh.triangles {
+                let ids = [
+                    triangle[0] as usize,
+                    triangle[1] as usize,
+                    triangle[2] as usize,
+                ];
+                if ids.iter().any(|id| *id >= mesh.vertices.len()) {
+                    continue;
+                }
+                let local = [
+                    mesh.vertices[ids[0]] * mesh_scale + offset,
+                    mesh.vertices[ids[1]] * mesh_scale + offset,
+                    mesh.vertices[ids[2]] * mesh_scale + offset,
+                ];
+                let world = local.map(|point| transform.transform_point3(point));
+                let uvs = if ids.iter().all(|id| *id < mesh.uvs.len()) {
+                    Some([mesh.uvs[ids[0]], mesh.uvs[ids[1]], mesh.uvs[ids[2]]])
+                } else {
+                    None
+                };
+                let normals = if ids.iter().all(|id| *id < mesh.normals.len()) {
+                    Some([
+                        transform.transform_vector3(mesh.normals[ids[0]]).normalize_or_zero(),
+                        transform.transform_vector3(mesh.normals[ids[1]]).normalize_or_zero(),
+                        transform.transform_vector3(mesh.normals[ids[2]]).normalize_or_zero(),
+                    ])
+                } else {
+                    None
+                };
+
+                if draw_triangle(
+                    framebuffer,
+                    view_projection,
+                    world,
+                    uvs,
+                    normals,
+                    color * vertex_color,
+                    alpha,
+                    response,
+                    maps.clone(),
+                    lighting,
+                ) {
+                    stats.triangles += 1;
+                }
+            }
+        } else if let Some(mesh) = state.mesh_binding(&key) {
             let mesh = mesh.snapshot();
             for face in mesh.faces.values() {
                 if face.len() < 3 {
