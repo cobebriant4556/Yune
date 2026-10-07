@@ -17,8 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --workspace
-      - run: cargo test --workspace
+      - run: cargo check -p yune -p yune-runtime -p yune-render -p yune-reference -p yune-physics
+      - run: cargo test -p yune -p yune-runtime -p yune-render -p yune-reference -p yune-physics
   smoke-render:
     runs-on: ubuntu-latest
     steps:
