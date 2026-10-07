@@ -26,9 +26,10 @@ impl Rect {
     fn intersect(self, other: Self) -> Self {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
-        Self { x, y, w: (self.x + self.w).min(other.x + other.w).sub(x).max(0.0), h: (self.y + self.h).min(other.y + other.h).sub(y).max(0.0) }
+        Self { x, y, w: ((self.x + self.w).min(other.x + other.w) - x).max(0.0), h: ((self.y + self.h).min(other.y + other.h) - y).max(0.0) }
     }
-    fn valid(self) -> bool { [self.x, self.y, self.w, self.h].iter().all(|value| value.is_finite()) && self.w > 0.0 && self.h > 0.0 }
+    fn finite(self) -> bool { [self.x, self.y, self.w, self.h].iter().all(|value| value.is_finite()) && self.w >= 0.0 && self.h >= 0.0 }
+    fn valid(self) -> bool { self.finite() && self.w > 0.0 && self.h > 0.0 }
     fn contains(self, x: i32, y: i32) -> bool {
         let x = x as f32 + 0.5;
         let y = y as f32 + 0.5;
@@ -40,8 +41,6 @@ impl Rect {
             (self.y + self.h).ceil().min(framebuffer.height as f32) as i32)
     }
 }
-
-use std::ops::Sub;
 
 #[derive(Clone, Copy)]
 struct DrawItem { instance: Instance, rect: Rect, clip: Rect, scale: f32, z: i32, order: usize }
@@ -69,7 +68,7 @@ pub fn render_gui(framebuffer: &mut Framebuffer, root: Instance, state: &RenderS
 }
 
 pub(crate) fn render_gui_in_rect(framebuffer: &mut Framebuffer, root: Instance, state: &RenderState, root_rect: Rect) -> GuiStats {
-    if !root_rect.valid() || (root.is_a("LayerCollector") && !bool_prop(&root, "Enabled", true)) { return GuiStats::default(); }
+    if !root_rect.finite() || (root.is_a("LayerCollector") && !bool_prop(&root, "Enabled", true)) { return GuiStats::default(); }
     let mut clip = screen_rect(framebuffer);
     if bool_prop(&root, "ClipsDescendants", false) { clip = clip.intersect(root_rect); }
     let sibling = enum_prop(&root, "ZIndexBehavior", 1) == 1;
@@ -102,7 +101,7 @@ fn collect_items(root: Instance, parent: Rect, inherited_scale: f32, clip: Rect,
         let x = (parent.x + resolve(position.x, parent.w, inherited_scale) - anchor.x * w).round();
         let y = (parent.y + resolve(position.y, parent.h, inherited_scale) - anchor.y * h).round();
         let rect = Rect { x, y, w, h };
-        if !rect.valid() { continue; }
+        if !rect.finite() { continue; }
         child.set_property("AbsolutePosition", Variant::Vector2(DomVector2 { x, y }));
         child.set_property("AbsoluteSize", Variant::Vector2(DomVector2 { x: w, y: h }));
         items.push(DrawItem { instance: child, rect, clip, scale, z: i32_prop(&child, "ZIndex", 1), order: items.len() });
@@ -123,6 +122,7 @@ fn fill(framebuffer: &mut Framebuffer, rect: Rect, clip: Rect, color: [u8; 4]) {
 }
 
 fn draw_item(framebuffer: &mut Framebuffer, item: DrawItem, state: &RenderState, stats: &mut GuiStats) {
+    if !item.rect.valid() { return; }
     let background = color_prop(&item.instance, "BackgroundColor3", Vec3::ONE);
     fill(framebuffer, item.rect, item.clip, color_to_rgba(background, f32_prop(&item.instance, "BackgroundTransparency", 0.0)));
     let border = (i32_prop(&item.instance, "BorderSizePixel", 0).max(0) as f32 * item.scale).round();
@@ -301,12 +301,14 @@ fn sample_pixels(width: u32, pixels: &[u8], crop: Rect, x: f32, y: f32, nearest:
     let y = y - 0.5;
     let ix = x.floor() as i32;
     let iy = y.floor() as i32;
+    let tx = x - ix as f32;
+    let ty = y - iy as f32;
     let premultiply = |value: Vec4| Vec4::new(value.x * value.w, value.y * value.w, value.z * value.w, value.w);
     let a = premultiply(read(ix, iy));
     let b = premultiply(read(ix + 1, iy));
     let c = premultiply(read(ix, iy + 1));
     let d = premultiply(read(ix + 1, iy + 1));
-    let result = a.lerp(b, x.fract()).lerp(c.lerp(d, x.fract()), y.fract());
+    let result = a.lerp(b, tx).lerp(c.lerp(d, tx), ty);
     if result.w > f32::EPSILON { Vec4::new(result.x / result.w, result.y / result.w, result.z / result.w, result.w) } else { Vec4::ZERO }
 }
 
