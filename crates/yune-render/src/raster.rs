@@ -6,18 +6,30 @@ use crate::{RenderState, framebuffer::Framebuffer, props::{cframe_prop, color_pr
 #[derive(Debug, Clone, Copy)]
 pub struct Lighting {
     pub ambient: Vec3,
+    pub outdoor_ambient: Vec3,
     pub light_color: Vec3,
     pub light_direction: Vec3,
     pub brightness: f32,
+    pub exposure: f32,
+    pub fog_color: Vec3,
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub camera_position: Vec3,
 }
 
 impl Default for Lighting {
     fn default() -> Self {
         Self {
             ambient: Vec3::splat(0.35),
+            outdoor_ambient: Vec3::splat(0.5),
             light_color: Vec3::ONE,
             light_direction: Vec3::new(-0.6, -1.0, -0.45).normalize(),
             brightness: 0.85,
+            exposure: 0.0,
+            fog_color: Vec3::new(0.75, 0.82, 0.9),
+            fog_start: 0.0,
+            fog_end: 100000.0,
+            camera_position: Vec3::ZERO,
         }
     }
 }
@@ -43,6 +55,8 @@ pub fn render_world(
     lighting: Lighting,
 ) -> RenderStats {
     let camera_cf = cframe_prop(&camera, "CFrame", Mat4::IDENTITY);
+    let mut lighting = lighting;
+    lighting.camera_position = camera_cf.w_axis.truncate();
     let fov = f32_prop(&camera, "FieldOfView", 70.0).clamp(1.0, 120.0);
     let aspect = framebuffer.width as f32 / framebuffer.height as f32;
     let projection = Mat4::perspective_rh(fov.to_radians(), aspect, 0.05, 10000.0);
@@ -157,8 +171,21 @@ fn draw_triangle(
     let Some(c) = project(framebuffer, view_projection, c_world) else { return false };
 
     let normal = (b_world - a_world).cross(c_world - a_world).normalize_or_zero();
-    let diffuse = normal.dot(-lighting.light_direction.normalize_or_zero()).max(0.0) * lighting.brightness;
-    let lit = base_color * lighting.ambient + base_color * lighting.light_color * diffuse;
+    let diffuse = normal
+        .dot(-lighting.light_direction.normalize_or_zero())
+        .max(0.0)
+        * lighting.brightness;
+    let ambient = lighting.ambient.max(lighting.outdoor_ambient * 0.35);
+    let exposure = 2.0_f32.powf(lighting.exposure);
+    let mut lit =
+        (base_color * ambient + base_color * lighting.light_color * diffuse) * exposure;
+
+    let center = (a_world + b_world + c_world) / 3.0;
+    let distance = center.distance(lighting.camera_position);
+    let fog_range = (lighting.fog_end - lighting.fog_start).max(0.0001);
+    let fog = ((distance - lighting.fog_start) / fog_range).clamp(0.0, 1.0);
+    lit = lit.lerp(lighting.fog_color, fog);
+
     let rgba = [
         (lit.x.clamp(0.0, 1.0) * 255.0).round() as u8,
         (lit.y.clamp(0.0, 1.0) * 255.0).round() as u8,
