@@ -1,7 +1,10 @@
 use font8x8::{BASIC_FONTS, UnicodeFonts};
+use fontdue::layout::{
+    CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign, WrapStyle,
+};
 use glam::{Vec2, Vec3};
 use lune_roblox::instance::Instance;
-use rbx_dom_weak::types::{UDim, UDim2};
+use rbx_dom_weak::types::{UDim, UDim2, Variant};
 
 use crate::{
     ImageBinding, RenderState,
@@ -113,7 +116,7 @@ fn draw_item(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderState
     }
 
     if class == "TextLabel" || class == "TextButton" || class == "TextBox" {
-        draw_text(framebuffer, item);
+        draw_text(framebuffer, item, state);
     } else if class == "ImageLabel" || class == "ImageButton" {
         draw_image(framebuffer, item, state);
     } else if class == "ViewportFrame" {
@@ -121,7 +124,151 @@ fn draw_item(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderState
     }
 }
 
-fn draw_text(framebuffer: &mut Framebuffer, item: &DrawItem) {
+fn draw_text(framebuffer: &mut Framebuffer, item: &DrawItem, state: &RenderState) {
+    let family = match item.instance.get_property("FontFace") {
+        Some(Variant::Font(font)) => font.family,
+        _ => String::new(),
+    };
+
+    if let Some(font) = state.font_asset(&family) {
+        draw_vector_text(framebuffer, item, font.as_ref());
+    } else {
+        draw_bitmap_text(framebuffer, item);
+    }
+}
+
+fn draw_vector_text(framebuffer: &mut Framebuffer, item: &DrawItem, font: &fontdue::Font) {
+    let text = string_prop(&item.instance, "Text", "");
+    if text.is_empty() {
+        return;
+    }
+
+    let color = color_prop(&item.instance, "TextColor3", Vec3::ONE);
+    let transparency = f32_prop(&item.instance, "TextTransparency", 0.0).clamp(0.0, 1.0);
+    let wrapped = bool_prop(&item.instance, "TextWrapped", false);
+    let scaled = bool_prop(&item.instance, "TextScaled", false);
+    let x_alignment = enum_prop(&item.instance, "TextXAlignment", 2);
+    let y_alignment = enum_prop(&item.instance, "TextYAlignment", 1);
+
+    let px = if scaled {
+        fit_vector_text(font, &text, item.rect, wrapped)
+    } else {
+        f32_prop(&item.instance, "TextSize", 14.0).clamp(1.0, 200.0)
+    };
+
+    let horizontal_align = match x_alignment {
+        0 => HorizontalAlign::Left,
+        1 => HorizontalAlign::Right,
+        _ => HorizontalAlign::Center,
+    };
+    let vertical_align = match y_alignment {
+        0 => VerticalAlign::Top,
+        2 => VerticalAlign::Bottom,
+        _ => VerticalAlign::Middle,
+    };
+
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings {
+        x: item.rect.x,
+        y: item.rect.y,
+        max_width: if wrapped { Some(item.rect.w.max(1.0)) } else { None },
+        max_height: Some(item.rect.h.max(1.0)),
+        horizontal_align,
+        vertical_align,
+        line_height: 1.0,
+        wrap_style: WrapStyle::Word,
+        wrap_hard_breaks: true,
+    });
+    layout.append(&[font], &TextStyle::new(&text, px, 0));
+
+    let x_shift = if wrapped {
+        0.0
+    } else {
+        let bounds = layout
+            .glyphs()
+            .iter()
+            .fold(None::<(f32, f32)>, |bounds, glyph| {
+                let min = glyph.x;
+                let max = glyph.x + glyph.width as f32;
+                Some(match bounds {
+                    Some((old_min, old_max)) => (old_min.min(min), old_max.max(max)),
+                    None => (min, max),
+                })
+            });
+        let width = bounds.map_or(0.0, |(min, max)| max - min);
+        match x_alignment {
+            0 => item.rect.x,
+            1 => item.rect.x + item.rect.w - width,
+            _ => item.rect.x + (item.rect.w - width) * 0.5,
+        }
+    };
+
+    for glyph in layout.glyphs() {
+        let (_, bitmap) = font.rasterize_config(glyph.key);
+        if glyph.width == 0 || glyph.height == 0 {
+            continue;
+        }
+
+        let origin_x = if wrapped {
+            glyph.x.round() as i32
+        } else {
+            (glyph.x + x_shift).round() as i32
+        };
+        let origin_y = glyph.y.round() as i32;
+
+        for gy in 0..glyph.height {
+            for gx in 0..glyph.width {
+                let coverage = bitmap[gy * glyph.width + gx] as f32 / 255.0;
+                if coverage <= f32::EPSILON {
+                    continue;
+                }
+                framebuffer.blend_pixel(
+                    origin_x + gx as i32,
+                    origin_y + gy as i32,
+                    [
+                        (color.x.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (color.y.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (color.z.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (coverage * (1.0 - transparency) * 255.0).round() as u8,
+                    ],
+                );
+            }
+        }
+    }
+}
+
+fn fit_vector_text(font: &fontdue::Font, text: &str, rect: Rect, wrapped: bool) -> f32 {
+    let mut low = 1.0;
+    let mut high = rect.h.max(1.0).min(200.0);
+
+    for _ in 0..8 {
+        let mid = (low + high) * 0.5;
+        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        layout.reset(&LayoutSettings {
+            max_width: if wrapped { Some(rect.w.max(1.0)) } else { None },
+            max_height: None,
+            ..LayoutSettings::default()
+        });
+        layout.append(&[font], &TextStyle::new(text, mid, 0));
+
+        let width = layout
+            .glyphs()
+            .iter()
+            .map(|glyph| glyph.x + glyph.width as f32)
+            .fold(0.0, f32::max);
+        let fits_width = wrapped || width <= rect.w.max(1.0);
+        let fits_height = layout.height() <= rect.h.max(1.0);
+        if fits_width && fits_height {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+
+    low.max(1.0)
+}
+
+fn draw_bitmap_text(framebuffer: &mut Framebuffer, item: &DrawItem) {
     let text = string_prop(&item.instance, "Text", "");
     if text.is_empty() {
         return;
