@@ -8,6 +8,7 @@ description = "Deterministic headless renderer and editable asset layer for Yune
 
 [dependencies]
 font8x8.workspace = true
+fontdue.workspace = true
 glam.workspace = true
 image.workspace = true
 mlua.workspace = true
