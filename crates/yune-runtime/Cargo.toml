@@ -1,0 +1,14 @@
+[package]
+name = "yune-runtime"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DataModel, services, frame loop, and runtime bridge for Yune"
+
+[dependencies]
+glam.workspace = true
+lune-roblox.workspace = true
+mlua.workspace = true
+rbx_dom_weak.workspace = true
+yune-render.workspace = true
