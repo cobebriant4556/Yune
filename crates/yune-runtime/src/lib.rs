@@ -2,10 +2,12 @@ mod signal;
 
 use std::{
     cell::Cell,
+    fs,
     rc::Rc,
 };
 
 use lune_roblox::{
+    document::{Document, DocumentKind},
     instance::{Instance, instance_to_lua, registry::InstanceRegistry},
 };
 use mlua::prelude::*;
@@ -64,6 +66,22 @@ pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
                 step_runtime(&run_state, dt)?;
             }
             Ok(())
+        })?,
+    )?;
+
+    let load_place_state = state.clone();
+    module.set(
+        "loadPlace",
+        lua.create_function(move |_, path: String| {
+            load_place_into(load_place_state.game, &path)
+        })?,
+    )?;
+
+    module.set(
+        "executeSource",
+        lua.create_function(|lua, (source, chunk_name): (String, Option<String>)| {
+            let name = chunk_name.unwrap_or_else(|| "YuneScript".to_string());
+            lua.load(source).set_name(name).exec()
         })?,
     )?;
 
@@ -268,6 +286,47 @@ fn step_runtime(state: &RuntimeState, dt: f64) -> LuaResult<()> {
     state.signals.heartbeat.fire1(dt)?;
     state.signals.pre_render.fire1(dt)?;
     state.signals.render_stepped.fire1(dt)?;
+
+    Ok(())
+}
+
+
+fn load_place_into(game: Instance, path: &str) -> LuaResult<()> {
+    let bytes = fs::read(path).map_err(LuaError::external)?;
+    let source_game = Document::from_bytes(bytes, DocumentKind::Place)
+        .map_err(LuaError::external)?
+        .into_data_model_instance()
+        .map_err(LuaError::external)?;
+
+    let source_services = source_game.get_children();
+    for source_service in source_services {
+        let class_name = source_service.get_class_name().to_string();
+        if let Some(target_service) = game
+            .get_children()
+            .into_iter()
+            .find(|child| child.get_class_name() == class_name)
+        {
+            let properties = source_service.with_dom(|dom| {
+                dom.get_by_ref(source_service.dom_ref)
+                    .map(|instance| instance.properties.clone())
+                    .unwrap_or_default()
+            });
+
+            for child in source_service.get_children() {
+                child.set_parent(Some(target_service));
+            }
+
+            target_service.with_dom_mut(|dom| {
+                if let Some(instance) = dom.get_by_ref_mut(target_service.dom_ref) {
+                    for (name, value) in properties {
+                        instance.properties.insert(name, value);
+                    }
+                }
+            });
+        } else {
+            source_service.set_parent(Some(game));
+        }
+    }
 
     Ok(())
 }
