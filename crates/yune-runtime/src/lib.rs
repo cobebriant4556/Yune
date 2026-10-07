@@ -1,5 +1,6 @@
 mod animation;
 mod joints;
+mod script_context;
 mod signal;
 
 use std::{
@@ -18,6 +19,7 @@ use rbx_dom_weak::types::{Color3 as DomColor3, Variant};
 
 use animation::AnimationSystem;
 use joints::JointSystem;
+use script_context::ScriptContext;
 use signal::Signal;
 use yune_physics::PhysicsWorld;
 
@@ -43,13 +45,16 @@ struct RuntimeState {
     physics: Rc<RefCell<PhysicsWorld>>,
     joints: Rc<RefCell<JointSystem>>,
     animations: Rc<RefCell<AnimationSystem>>,
+    scripts: Rc<RefCell<ScriptContext>>,
 }
 
 pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     inject_roblox_globals(lua)?;
 
     let render_state = yune_render::RenderState::default();
-    let state = bootstrap(lua)?;
+    let scripts = Rc::new(RefCell::new(ScriptContext::default()));
+    ScriptContext::install(lua, scripts.clone())?;
+    let state = bootstrap(lua, scripts)?;
     install_run_service(lua, &state)?;
     install_physics_api(lua, state.physics.clone())?;
     AnimationSystem::install(lua, state.animations.clone())?;
@@ -63,18 +68,18 @@ pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     let step_state = state.clone();
     module.set(
         "step",
-        lua.create_function(move |_, dt: Option<f64>| {
-            step_runtime(&step_state, dt.unwrap_or(1.0 / 60.0))
+        lua.create_function(move |lua, dt: Option<f64>| {
+            step_runtime(lua, &step_state, dt.unwrap_or(1.0 / 60.0))
         })?,
     )?;
 
     let run_state = state.clone();
     module.set(
         "runFrames",
-        lua.create_function(move |_, (count, dt): (u64, Option<f64>)| {
+        lua.create_function(move |lua, (count, dt): (u64, Option<f64>)| {
             let dt = dt.unwrap_or(1.0 / 60.0);
             for _ in 0..count {
-                step_runtime(&run_state, dt)?;
+                step_runtime(lua, &run_state, dt)?;
             }
             Ok(())
         })?,
@@ -83,8 +88,14 @@ pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     let load_place_state = state.clone();
     module.set(
         "loadPlace",
-        lua.create_function(move |_, path: String| {
-            load_place_into(load_place_state.game, &path)
+        lua.create_function(move |lua, path: String| {
+            load_place_into(load_place_state.game, &path)?;
+            {
+                let mut scripts = load_place_state.scripts.borrow_mut();
+                scripts.reset();
+                scripts.discover(lua, load_place_state.game)?;
+            }
+            Ok(())
         })?,
     )?;
 
@@ -111,7 +122,7 @@ pub fn install(lua: &Lua) -> LuaResult<LuaValue> {
     module.set("game", instance_to_lua(lua, state.game)?)?;
     module.set("workspace", instance_to_lua(lua, state.workspace)?)?;
     module.set("render", render_module)?;
-    module.set("version", "0.2.0")?;
+    module.set("version", "0.3.0")?;
 
     lua.globals().set("Yune", module.clone())?;
     Ok(LuaValue::Table(module))
@@ -128,7 +139,7 @@ fn inject_roblox_globals(lua: &Lua) -> LuaResult<()> {
     Ok(())
 }
 
-fn bootstrap(lua: &Lua) -> LuaResult<RuntimeState> {
+fn bootstrap(lua: &Lua, scripts: Rc<RefCell<ScriptContext>>) -> LuaResult<RuntimeState> {
     let game = Instance::new_orphaned("DataModel");
     game.set_name("Game");
     game.set_property("PlaceId", Variant::Int64(0));
@@ -212,6 +223,7 @@ fn bootstrap(lua: &Lua) -> LuaResult<RuntimeState> {
         physics: Rc::new(RefCell::new(PhysicsWorld::default())),
         joints: Rc::new(RefCell::new(JointSystem::default())),
         animations: Rc::new(RefCell::new(AnimationSystem::default())),
+        scripts,
     })
 }
 
@@ -367,8 +379,9 @@ fn install_physics_api(lua: &Lua, physics: Rc<RefCell<PhysicsWorld>>) -> LuaResu
     Ok(())
 }
 
-fn step_runtime(state: &RuntimeState, dt: f64) -> LuaResult<()> {
+fn step_runtime(lua: &Lua, state: &RuntimeState, dt: f64) -> LuaResult<()> {
     let dt = dt.max(0.0);
+    state.scripts.borrow_mut().discover(lua, state.game)?;
     let old_time = state.time.get();
     let new_time = old_time + dt;
     let new_frame = state.frame.get().saturating_add(1);
