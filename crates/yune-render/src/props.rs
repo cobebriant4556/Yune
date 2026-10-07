@@ -94,3 +94,19 @@ pub fn color_to_rgba(color: Vec3, transparency: f32) -> [u8; 4] {
         ((1.0 - transparency.clamp(0.0, 1.0)) * 255.0).round() as u8,
     ]
 }
+
+pub fn enum_prop(instance: &Instance, name: &str, default: u32) -> u32 {
+    match instance.get_property(name) {
+        Some(Variant::Enum(value)) => value.to_u32(),
+        Some(Variant::EnumItem(value)) => value.value,
+        _ => default,
+    }
+}
+
+pub fn content_prop(instance: &Instance, name: &str) -> Option<String> {
+    match instance.get_property(name) {
+        Some(Variant::ContentId(value)) => Some(value.to_string()),
+        Some(Variant::String(value)) => Some(value),
+        _ => None,
+    }
+}
