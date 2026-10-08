@@ -3,16 +3,32 @@ mod pcm;
 mod player;
 mod signals;
 mod bindings;
-pub use bindings::install;
+mod dsp;
+mod pitch;
+mod effects;
+mod spatial;
+mod extended;
 
 use std::{cell::RefCell, collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}, rc::Rc, sync::Arc};
-use lune_roblox::instance::{Instance, instance_to_lua, registry::InstanceRegistry};
+use lune_roblox::instance::{Instance, instance_to_lua, registry::InstanceRegistry, register_custom_class, CustomClassError};
 use mlua::prelude::*;
 use rbx_dom_weak::types::{ContentType, Variant};
 use graph::{Analyzer, Edge, Graph};
 use pcm::{Clip, Frame, SAMPLE_RATE};
 use player::{Config, Player};
 use signals::AudioSignal;
+
+pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTable> {
+    for class in graph::CLASSES {
+        match register_custom_class(class, "Instance", false) {
+            Ok(()) | Err(CustomClassError::AlreadyExists(_)) => {}
+            Err(error) => return Err(LuaError::external(error)),
+        }
+    }
+    let module = bindings::install(lua, world.clone())?;
+    extended::install(lua, world, &module)?;
+    Ok(module)
+}
 
 struct Capture { source: Option<String>, samples: Vec<Frame>, max_frames: usize, start: u64 }
 struct Trace { instance: String, event: String, sample: u64 }
@@ -32,6 +48,8 @@ pub struct AudioWorld {
     traces: Vec<Trace>,
     wires: BTreeMap<String, Edge>,
     analyzers: BTreeMap<String, Analyzer>,
+    effects: BTreeMap<String, effects::Effect>,
+    curves: spatial::CurveMap,
     diagnostics: BTreeSet<String>,
 }
 impl AudioWorld {
@@ -40,7 +58,7 @@ impl AudioWorld {
             game, players: BTreeMap::new(), assets: BTreeMap::new(), root: None, clock: 0,
             fractional_samples: 0.0, next_action: 0, capture: None, signals: BTreeMap::new(),
             pending: Vec::new(), traces: Vec::new(), wires: BTreeMap::new(),
-            analyzers: BTreeMap::new(), diagnostics: BTreeSet::new(),
+            analyzers: BTreeMap::new(), effects: BTreeMap::new(), curves: BTreeMap::new(), diagnostics: BTreeSet::new(),
         }
     }
     fn signal(&mut self, instance: Instance, name: &str) -> AudioSignal {
@@ -108,7 +126,7 @@ impl AudioWorld {
         };
     }
     fn refresh_graph(&mut self) -> Graph {
-        let graph = Graph::build(self.game);
+        let graph = Graph::build(self.game, &self.curves);
         let current = graph.edges.iter().map(|edge| (edge.identity(), edge.clone())).collect::<BTreeMap<_, _>>();
         for (id, edge) in &self.wires {
             if !current.contains_key(id) { self.pending.push(Event::Wiring(false, edge.clone())); }
@@ -117,7 +135,11 @@ impl AudioWorld {
             if !self.wires.contains_key(id) { self.pending.push(Event::Wiring(true, edge.clone())); }
         }
         self.wires = current;
-        for error in &graph.errors { self.diagnostics.insert(error.clone()); }
+        for (id, node) in &graph.nodes {
+            if let Some((owner, _)) = self.curves.get_mut(id) { *owner = *node; }
+        }
+        self.curves.retain(|_, (instance, _)| Instance::new_opt(instance.dom_id, instance.dom_ref).is_some());
+        for error in graph.errors.iter().chain(&graph.warnings) { self.diagnostics.insert(error.clone()); }
         graph
     }
     fn command(&mut self, instance: Instance, play: bool, at: Option<f64>) -> LuaResult<Option<u64>> {
@@ -151,7 +173,9 @@ impl AudioWorld {
         if !(0.0..=60.0).contains(&dt) { return Err(LuaError::runtime("audio step must be between 0 and 60 seconds")); }
         let graph = self.refresh_graph();
         if !graph.errors.is_empty() { return Err(LuaError::runtime(graph.errors.join("; "))); }
-        if graph.nodes.len() > 512 { return Err(LuaError::runtime("headless audio graph exceeds 512 nodes")); }
+        let effect_memory = graph.nodes.values().filter(|node| effects::CLASSES.contains(&node.get_class_name()))
+            .map(|node| effects::memory_bound(node.get_class_name())).sum::<usize>();
+        if effect_memory > 256 * 1024 * 1024 { return Err(LuaError::runtime("headless DSP state would exceed the 256 MiB budget")); }
         let debt = self.fractional_samples + dt * SAMPLE_RATE as f64;
         let frames = (debt + 1e-7).floor() as usize;
         if let Some(capture) = &self.capture {
@@ -168,6 +192,7 @@ impl AudioWorld {
         }
         self.players.retain(|_, (instance, _)| Instance::new_opt(instance.dom_id, instance.dom_ref).is_some());
         self.analyzers.retain(|id, _| graph.nodes.contains_key(id));
+        self.effects.retain(|id, _| graph.nodes.contains_key(id));
         let local_player = self.game.get_children().into_iter().find(|child| child.get_class_name() == "Players")
             .and_then(|players| reference(&players, "LocalPlayer"));
         let mut remaining = frames;
@@ -185,7 +210,10 @@ impl AudioWorld {
                 }
                 sources.insert(key(node), samples);
             }
-            let (master, mut streams) = graph.mix(sources, count, &mut self.analyzers, local_player);
+            let (master, mut streams) = match graph.mix(sources, count, &mut self.analyzers, &mut self.effects, local_player) {
+                Ok(result) => result,
+                Err(error) => { self.diagnostics.insert(error.clone()); return Err(LuaError::runtime(error)); }
+            };
             if let Some(capture) = &mut self.capture {
                 let stream = match &capture.source {
                     Some(source) => streams.remove(source).unwrap_or_else(|| vec![[0.0; 2]; count]),
