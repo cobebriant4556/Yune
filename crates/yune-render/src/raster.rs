@@ -1,3 +1,7 @@
+#[path = "lighting_state.rs"]
+mod lighting_state;
+use lighting_state::{AmbientState, FogState};
+
 use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
@@ -455,7 +459,8 @@ fn draw_triangle(
     }
 
     let screen = [a, b, c];
-    let ambient = lighting.ambient.max(lighting.outdoor_ambient * 0.35);
+    let ambient = AmbientState::prepare(lighting.ambient, lighting.outdoor_ambient).unoccluded();
+    let fog_state = FogState::prepare(lighting.fog_color, lighting.fog_start, lighting.fog_end);
     let light_direction = -lighting.light_direction.normalize_or_zero();
     let exposure = 2.0_f32.powf(lighting.exposure);
 
@@ -528,10 +533,7 @@ fn draw_triangle(
             lit *= exposure;
 
             let distance = world_position.distance(lighting.camera_position);
-            let fog_range = (lighting.fog_end - lighting.fog_start).max(0.0001);
-            let fog =
-                ((distance - lighting.fog_start) / fog_range).clamp(0.0, 1.0);
-            lit = lit.lerp(lighting.fog_color, fog);
+            lit = lit.lerp(fog_state.color, fog_state.amount(distance));
 
             let output_alpha = (alpha * texture.w).clamp(0.0, 1.0);
             let rgba = [
