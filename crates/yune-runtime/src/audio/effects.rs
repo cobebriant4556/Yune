@@ -10,7 +10,7 @@ pub const CLASSES: &[&str] = &["AudioFader", "AudioChorus", "AudioFlanger", "Aud
 pub const PARAMETERS: &[(&str, &str, f64, f64, f64)] = &[
     ("AudioFader", "Volume", 1.0, 0.0, 3.0),
     ("AudioChorus", "Depth", 0.15, 0.0, 1.0), ("AudioChorus", "Mix", 0.5, 0.0, 1.0), ("AudioChorus", "Rate", 0.5, 0.0, 20.0),
-    ("AudioFlanger", "Depth", 0.45, 0.0, 1.0), ("AudioFlanger", "Mix", 0.85, 0.0, 1.0), ("AudioFlanger", "Rate", 5.0, 0.0, 20.0),
+    ("AudioFlanger", "Depth", 0.45, 0.01, 1.0), ("AudioFlanger", "Mix", 0.85, 0.0, 1.0), ("AudioFlanger", "Rate", 5.0, 0.0, 20.0),
     ("AudioDistortion", "Level", 0.5, 0.0, 1.0),
     ("AudioEcho", "DelayTime", 0.25, 0.001, 5.0), ("AudioEcho", "Feedback", 0.5, 0.0, 1.0),
     ("AudioEcho", "DryLevel", 0.0, -80.0, 10.0), ("AudioEcho", "WetLevel", 0.0, -80.0, 10.0), ("AudioEcho", "RampTime", 0.0, 0.0, 60000.0),
@@ -53,8 +53,13 @@ pub fn filter_response(node: &Instance, frequency: f64) -> f64 {
 pub fn memory_bound(class: &str) -> usize {
     match class {
         "AudioEcho" => 2_000_000, "AudioReverb" => 400_000, "AudioPitchShifter" => 1_000_000,
-        "AudioChorus" | "AudioFlanger" => 32_000, _ => 2048,
+        "AudioChorus" => 48_000, "AudioFlanger" => 8192, _ => 2048,
     }
+}
+
+fn modulation_delay(flanger: bool, depth: f64, phase: f64) -> f64 {
+    let maximum = if flanger { 0.01 } else { 0.1 };
+    maximum * depth * (0.5 + 0.5 * phase.sin())
 }
 
 pub struct Effect {
@@ -90,10 +95,11 @@ impl Effect {
                 let mid = value(node, "MidGain");
                 let coefficients = [dsp::biquad(1, low.clamp(200.0, 20000.0), FRAC_1_SQRT_2, value(node, "LowGain") - mid),
                     dsp::biquad(2, high.clamp(200.0, 20000.0), FRAC_1_SQRT_2, value(node, "HighGain") - mid)];
+                let gain = dsp::db(mid);
                 for frame in stream {
                     for channel in 0..2 {
                         let sample = self.filters[0].sample(f64::from(frame[channel]), channel, coefficients[0]);
-                        frame[channel] = (self.filters[1].sample(sample, channel, coefficients[1]) * dsp::db(mid)) as f32;
+                        frame[channel] = (self.filters[1].sample(sample, channel, coefficients[1]) * gain) as f32;
                     }
                 }
             }
@@ -137,23 +143,35 @@ impl Effect {
         }
     }
     fn modulated_delay(&mut self, node: &Instance, stream: &mut [Frame]) {
-        if self.delays.is_empty() { self.delays.push(Delay::new((0.06 * RATE) as usize + 2)); }
         let flanger = node.get_class_name() == "AudioFlanger";
+        if self.delays.is_empty() {
+            let seconds = if flanger { 0.01 } else { 0.1 };
+            self.delays.push(Delay::new((seconds * RATE) as usize + 2));
+        }
         let depth = value(node, "Depth");
         let mix = value(node, "Mix");
         let rate = value(node, "Rate") / RATE;
         let voices = if flanger { 1 } else { 3 };
         for frame in stream {
             let mut stored = *frame;
+            if !flanger && depth == 0.0 {
+                self.delays[0].push(stored);
+                self.phase = (self.phase + rate).fract();
+                continue;
+            }
             for channel in 0..2 {
+                let input = f64::from(frame[channel]);
                 let mut delayed = 0.0;
                 for voice in 0..voices {
                     let phase = TAU * (self.phase + voice as f64 / 3.0 + channel as f64 / 4.0);
-                    let seconds = if flanger { 0.002 + 0.0019 * depth * phase.sin() } else { 0.018 + 0.008 * depth * phase.sin() };
-                    delayed += self.delays[0].read(seconds * RATE, channel) / voices as f64;
+                    let frames = modulation_delay(flanger, depth, phase) * RATE;
+                    let sample = if frames < 1.0 {
+                        input * (1.0 - frames) + self.delays[0].read(1.0, channel) * frames
+                    } else { self.delays[0].read(frames, channel) };
+                    delayed += sample / voices as f64;
                 }
                 if flanger { stored[channel] += (delayed * 0.5 * depth) as f32; }
-                frame[channel] = (f64::from(frame[channel]) * (1.0 - mix) + delayed * mix) as f32;
+                frame[channel] = (input * (1.0 - mix) + delayed * mix) as f32;
             }
             self.delays[0].push(stored);
             self.phase = (self.phase + rate).fract();
@@ -337,6 +355,39 @@ mod tests {
             Effect::default().process(&node, &mut stream, None);
             assert!(stream.iter().flatten().all(|sample| sample.is_finite()), "{class}");
             if *class == "AudioReverb" { assert!(stream[4000..].iter().flatten().any(|sample| sample.abs() > 1e-5)); }
+        }
+    }
+    #[test]
+    fn modulation_depth_covers_documented_maximum_delays() {
+        let peak = std::f64::consts::FRAC_PI_2;
+        assert_eq!(modulation_delay(false, 1.0, peak), 0.1);
+        assert_eq!(modulation_delay(true, 1.0, peak), 0.01);
+        assert_eq!(modulation_delay(false, 0.0, peak), 0.0);
+        for flanger in [false, true] {
+            for i in 0..1000 {
+                let value = modulation_delay(flanger, 0.5, i as f64 * TAU / 1000.0);
+                assert!((0.0..=if flanger { 0.005 } else { 0.05 }).contains(&value));
+            }
+        }
+    }
+    #[test]
+    fn zero_depth_chorus_is_bit_exact_without_bypass() {
+        let node = node("AudioChorus", &[("Depth", 0.0), ("Mix", 1.0)]);
+        let original = (0..3000).map(|i| [(i as f32 * 0.031).sin(), (i as f32 * 0.017).cos()]).collect::<Vec<_>>();
+        let mut actual = original.clone();
+        Effect::default().process(&node, &mut actual, None);
+        assert_eq!(actual, original);
+    }
+    #[test]
+    fn every_effect_is_independent_of_block_partition() {
+        for class in CLASSES {
+            let node = node(class, &[]);
+            let mut whole = (0..6000).map(|i| [(i as f32 * 0.137).sin() * 0.3, (i as f32 * 0.271).cos() * 0.2]).collect::<Vec<_>>();
+            let mut partitioned = whole.clone();
+            Effect::default().process(&node, &mut whole, None);
+            let mut effect = Effect::default();
+            for block in partitioned.chunks_mut(73) { effect.process(&node, block, None); }
+            assert_eq!(whole, partitioned, "{class}");
         }
     }
 }
