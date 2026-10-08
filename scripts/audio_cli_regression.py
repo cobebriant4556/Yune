@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from pathlib import Path
 import struct
 import subprocess
@@ -11,10 +10,12 @@ import sys
 import wave
 
 from compare_audio import compare
+from yune_binary import binary_from_args
 
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
+    binary = binary_from_args(root)
     output = root / "test-results" / "audio"
     output.mkdir(parents=True, exist_ok=True)
     reference = output / "reference-tone.wav"
@@ -33,7 +34,6 @@ def main() -> int:
         writer.setsampwidth(2)
         writer.setframerate(sample_rate)
         writer.writeframes(samples)
-    binary = root / "target" / "debug" / ("yune.exe" if os.name == "nt" else "yune")
     process = subprocess.run(
         [str(binary), "run", "examples/audio_capture.luau", str(reference), str(captured)],
         cwd=root, capture_output=True, text=True, timeout=60,

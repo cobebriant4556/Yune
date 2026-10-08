@@ -7,11 +7,19 @@ import subprocess
 import sys
 import zlib
 
+from yune_binary import binary_from_args
+
 root = Path(__file__).resolve().parents[1]
-binary = root / "target" / "debug" / ("yune.exe" if os.name == "nt" else "yune")
+try:
+    binary = binary_from_args(root)
+except (OSError, ValueError) as error:
+    print(f"Cannot run Yune smoke tests: {error}", file=sys.stderr)
+    sys.exit(1)
+child_env = dict(os.environ, YUNE_BIN=str(binary))
 output = root / "test-results"
 assets = output / "assets"
 assets.mkdir(parents=True, exist_ok=True)
+(output / "executable.json").write_text(json.dumps({"binary": str(binary)}, indent=2) + "\n", encoding="utf-8")
 shutil.copyfile(root / "examples/assets/triangle.mesh", assets / "123.mesh")
 
 def chunk(kind, data):
@@ -27,7 +35,7 @@ results = []
 def run_test(name, command, timeout=60):
     log = output / f"{name}.log"
     try:
-        process = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=timeout)
+        process = subprocess.run(command, cwd=root, env=child_env, capture_output=True, text=True, timeout=timeout)
         text = process.stdout + process.stderr
         passed = process.returncode == 0
     except (subprocess.TimeoutExpired, OSError) as error:
@@ -39,6 +47,7 @@ def run_test(name, command, timeout=60):
     if not passed:
         print(text[-12000:], flush=True)
 
+run_test("binary_resolution", [sys.executable, "scripts/test_yune_binary.py"])
 for scene in scenes:
     run_test(scene, [str(binary), "run", f"examples/{scene}.luau"])
 run_test("audio_cli_regression", [sys.executable, "scripts/audio_cli_regression.py"], timeout=90)

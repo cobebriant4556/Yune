@@ -2,21 +2,21 @@
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import struct
 import subprocess
 import sys
 import wave
 
+from yune_binary import binary_from_args
+
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "target" / "debug" / ("yune.exe" if os.name == "nt" else "yune")
 OUTPUT = ROOT / "test-results" / "audio"
 
 
-def capture(source: Path, name: str, effect: str, seconds: float) -> tuple[Path, dict]:
+def capture(binary: Path, source: Path, name: str, effect: str, seconds: float) -> tuple[Path, dict]:
     path = OUTPUT / name
-    command = [str(BINARY), "run", "examples/audio_spatial_capture.luau", str(source), str(path), str(seconds), effect]
+    command = [str(binary), "run", "examples/audio_spatial_capture.luau", str(source), str(path), str(seconds), effect]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=45)
     if result.returncode:
         raise AssertionError(f"Capture failed: {result.stdout}\n{result.stderr}")
@@ -33,6 +33,7 @@ def capture(source: Path, name: str, effect: str, seconds: float) -> tuple[Path,
 
 
 def main() -> None:
+    binary = binary_from_args(ROOT)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     source = OUTPUT / "spatial-cli-input.wav"
     samples = [round(math.sin(2 * math.pi * 523 * i / 48000) * 8000) for i in range(480)]
@@ -41,10 +42,10 @@ def main() -> None:
         wav.setsampwidth(2)
         wav.setframerate(48000)
         wav.writeframes(struct.pack("<" + "h" * len(samples), *samples))
-    capture(source, "spatial-cli-dry.wav", "none", 0.033375)
+    capture(binary, source, "spatial-cli-dry.wav", "none", 0.033375)
     for effect in ["AudioEcho", "AudioReverb", "AudioPitchShifter"]:
-        first, metadata = capture(source, f"spatial-cli-{effect}-1.wav", effect, 0.25)
-        second, repeated = capture(source, f"spatial-cli-{effect}-2.wav", effect, 0.25)
+        first, metadata = capture(binary, source, f"spatial-cli-{effect}-1.wav", effect, 0.25)
+        second, repeated = capture(binary, source, f"spatial-cli-{effect}-2.wav", effect, 0.25)
         assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest(), effect
         assert metadata["trajectory"] == repeated["trajectory"], effect
         assert metadata["events"] == repeated["events"], effect

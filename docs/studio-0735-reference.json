@@ -1,0 +1,104 @@
+{
+  "archive_name": "0.735-full(4).rar",
+  "archive_sha256": "899b78bd9dd981a20126bd87aec545b017b8409876ef37824a0c91d4da8d908d",
+  "classification": "Decompiler-generated C-like listings; not established as original buildable source",
+  "header_version_claim": "0.735 Studio, Mac symbols, 2026-08",
+  "version_claim_verified_against_executable": false,
+  "entries": 22704,
+  "regular_files": 22547,
+  "all_regular_files_have_c_extension": true,
+  "separate_shader_packs": [],
+  "separate_executables": [],
+  "original_headers_and_build_files": [],
+  "inspected_files": [
+    {
+      "path": "0.735-full/rbx/EditableMesh.c",
+      "bytes": 466197,
+      "sha256": "7302c2b9ee25d307c2aa66eb1b2872fe47a1d9130bdbce4828e36d1e3ff2b45a",
+      "listed_function_count": 190,
+      "unresolved_named_address_count": 39,
+      "example_unresolved_addresses": ["off_10C447D90", "off_10C451350", "off_10C4D9988", "off_10C4D99A0", "off_10C4D9AA8", "off_10C4D9AC0", "off_10C679E30", "off_10C686A30"]
+    },
+    {
+      "path": "0.735-full/rbx/EditableMeshData.c",
+      "bytes": 331571,
+      "sha256": "edbb88d0a0d214a46cc8dc1703d7a90f1e4c257af999c480bf160a81607afa36",
+      "listed_function_count": 172,
+      "unresolved_named_address_count": 10,
+      "example_unresolved_addresses": ["off_10C8127C0", "off_10C812898", "off_10C8128B0", "qword_10943F9A8", "qword_10943F9C0", "qword_10943F9E0", "xmmword_108F1DE10", "xmmword_108F33220"]
+    },
+    {
+      "path": "0.735-full/rbx/ColorAttr.c",
+      "bytes": 1462,
+      "sha256": "56d5e1c1e1ed02e4a2605644eb7d30b92415af9f389361fa4eed989086ebd5ec",
+      "listed_function_count": 1,
+      "unresolved_named_address_count": 3,
+      "example_unresolved_addresses": ["xmmword_1091049D0", "xmmword_1097A7380", "xmmword_109818F90"]
+    },
+    {
+      "path": "0.735-full/rbx/Color4.c",
+      "bytes": 3415,
+      "sha256": "3a48d62bec0e9931d2178d3913ac122eaaa961a3c81e45809e47c6612c33fb28",
+      "listed_function_count": 12,
+      "unresolved_named_address_count": 3,
+      "example_unresolved_addresses": ["xmmword_1091049D0", "xmmword_1094D1D20", "xmmword_10A449880"]
+    },
+    {
+      "path": "0.735-full/rbx/Vector3.c",
+      "bytes": 41611,
+      "sha256": "bcbd6dd8cf58ece613da89547d15bb8d1e6e60d67d931940590524f7e1b89593",
+      "listed_function_count": 40,
+      "unresolved_named_address_count": 3,
+      "example_unresolved_addresses": ["xmmword_108F246C0", "xmmword_108F46760", "xmmword_109785860"]
+    },
+    {
+      "path": "0.735-full/rbx/SlotMaps.c",
+      "bytes": 20449,
+      "sha256": "0a6dd63849ff1fd790c27701c8e628df2d805ba8a7f13b64746c78c294b1657b",
+      "listed_function_count": 16,
+      "unresolved_named_address_count": 0,
+      "example_unresolved_addresses": []
+    },
+    {
+      "path": "0.735-full/rbx/LightingParameters.c",
+      "bytes": 14034,
+      "sha256": "1f3f60c8fda892154ed74e70b749d27c1b1e6c4cba913b06b1964426e6381f32",
+      "listed_function_count": 4,
+      "unresolved_named_address_count": 22,
+      "example_unresolved_addresses": ["dword_10D2FAD68", "dword_10D2FAD74", "qword_10D2FAD60", "qword_10D2FAD6C", "xmmword_108F246C0", "xmmword_108F2F400", "xmmword_108F33130", "xmmword_109061A00"]
+    },
+    {
+      "path": "0.735-full/rbx/LightingQualityManager.c",
+      "bytes": 17595,
+      "sha256": "b4174d6fd1a103abebf623e3a272e4f71a2bfcad68753098d317ed6ca14e117e",
+      "listed_function_count": 23,
+      "unresolved_named_address_count": 1,
+      "example_unresolved_addresses": ["qword_10D7B13B0"]
+    },
+    {
+      "path": "0.735-full/rbx/VisualEngine.c",
+      "bytes": 437801,
+      "sha256": "9130de83482c9530a29bec511af8df32829d8164901187ab90a7ef6bb26b2dfc",
+      "listed_function_count": 99,
+      "unresolved_named_address_count": 30,
+      "example_unresolved_addresses": ["dword_10D77E450", "dword_10D7B1600", "dword_10D7B1638", "off_10C798D68", "off_10C798D90", "off_10C798DB8", "off_10C799178", "off_10C799250"]
+    },
+    {
+      "path": "0.735-full/rbx/ShaderManager.c",
+      "bytes": 128573,
+      "sha256": "d74f1b6fd8e9dda848d63b7774912be0ad013f725b25f4779d381a177805cdd5",
+      "listed_function_count": 25,
+      "unresolved_named_address_count": 4,
+      "example_unresolved_addresses": ["off_10C9FB7D8", "off_10C9FB968", "qword_10D7B13B0", "qword_10D7ED1A0"]
+    },
+    {
+      "path": "0.735-full/v8datamodel/Lighting.c",
+      "bytes": 93866,
+      "sha256": "6007d215ecd8f08fb003c2d83a82b2664e43258d1c004a03440c0cf7b3d085c6",
+      "listed_function_count": 97,
+      "unresolved_named_address_count": 6,
+      "example_unresolved_addresses": ["off_10C57C7C8", "off_10C57C898", "off_10C57CBD8", "off_10C57CBF0", "off_10C57CCC0", "qword_10D7F3CC8"]
+    }
+  ],
+  "rendering_port_implemented_by_this_audit": false
+}
