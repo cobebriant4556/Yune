@@ -1,4 +1,5 @@
 mod graph;
+mod source_kernels;
 mod pcm;
 mod player;
 mod signals;
@@ -149,11 +150,8 @@ impl AudioWorld {
         }
         self.refresh_player(instance, play);
         let instance_key = key(&instance);
-        if play && self.players[&instance_key].1.clip.is_none() {
-            return Err(LuaError::runtime(format!("AudioPlayer asset is not ready: {:?}; register a local asset first", self.players[&instance_key].1.asset)));
-        }
         let before = self.players[&instance_key].1.is_playing();
-        let mut action_id = None;
+        let mut action_id = Some(0);
         if let Some(at) = at {
             self.next_action = self.next_action.checked_add(1).ok_or_else(|| LuaError::runtime("audio action ID range exhausted"))?;
             action_id = Some(self.next_action);

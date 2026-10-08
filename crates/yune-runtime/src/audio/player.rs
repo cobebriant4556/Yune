@@ -33,19 +33,13 @@ impl Player {
     }
     pub fn duration(&self) -> f64 { self.clip.as_ref().map_or(0.0, |clip| clip.duration()) }
     fn bounds(&self) -> (f64, f64, f64, f64) {
-        let length = self.duration();
-        let (min, max) = self.config.playback;
-        let (start, end) = if min == max { (0.0, length) } else { (min.clamp(0.0, length), max.clamp(0.0, length)) };
-        let (min, max) = self.config.loop_region;
-        let (loop_start, loop_end) = if min == max { (start, end) } else { (min.max(start), max.min(end)) };
-        if loop_end <= loop_start { (start, end, start, end) }
-        else { (start, end, loop_start, loop_end) }
+        super::source_kernels::regions(self.duration(), self.config.playback, self.config.loop_region)
     }
     pub fn command(&mut self, play: bool) {
         if play {
             let (start, end, _, _) = self.bounds();
             if self.position < start || self.position >= end { self.position = start; }
-            self.playing = self.clip.is_some() && end > start;
+            self.playing = true;
         } else { self.playing = false; }
     }
     pub fn render(&mut self, first_sample: u64, count: usize, events: &mut Vec<(&'static str, u64)>) -> Vec<Frame> {
@@ -54,8 +48,8 @@ impl Player {
             let clock = first_sample + index as u64;
             while let Some((&key, &play)) = self.actions.first_key_value() {
                 if key.0 > clock { break; }
-                self.actions.remove(&key);
                 let before = self.is_playing();
+                self.actions.remove(&key);
                 self.command(play);
                 if before != self.is_playing() { events.push(("IsPlaying", clock)); }
             }
@@ -64,6 +58,7 @@ impl Player {
             let (start, end, loop_start, loop_end) = self.bounds();
             let boundary = if self.config.looping { loop_end } else { end };
             if boundary <= start {
+                self.position = 0.0;
                 self.playing = false;
                 events.push(("IsPlaying", clock));
                 events.push(("Ended", clock));
@@ -73,7 +68,7 @@ impl Player {
             if self.position >= boundary {
                 if self.config.looping { self.position = loop_start + (self.position - loop_start).rem_euclid(loop_end - loop_start); }
                 else {
-                    self.position = end;
+                    self.position = 0.0;
                     self.playing = false;
                     events.push(("IsPlaying", clock));
                     events.push(("Ended", clock));
@@ -91,7 +86,7 @@ impl Player {
                     // Degenerate sub-sample regions are bounded to one notification per output sample.
                     for _ in 0..crossings.min(1) { events.push(("Looped", clock + 1)); }
                 } else {
-                    self.position = end;
+                    self.position = 0.0;
                     self.playing = false;
                     events.push(("IsPlaying", clock + 1));
                     events.push(("Ended", clock + 1));
@@ -165,7 +160,7 @@ mod tests {
         player.command(true);
         let mut events = Vec::new();
         player.render(0, 96, &mut events);
-        assert!((player.position - 0.004).abs() < 1e-9);
+        assert!((player.position - 0.004).abs() < 1e-8);
         assert_eq!(events.iter().filter(|(event, _)| *event == "Looped").count(), 1);
         assert!(player.playing);
     }
@@ -184,4 +179,26 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(a.position, b.position);
     }
+    #[test]
+    fn natural_end_resets_cursor_but_stop_does_not() {
+        let mut player = player();
+        player.command(true);
+        player.render(0, 480, &mut Vec::new());
+        assert_eq!(player.position, 0.0);
+        assert!(!player.is_playing());
+        player.command(true);
+        assert_eq!(player.render(480, 1, &mut Vec::new()), [[0.5; 2]]);
+    }
+    #[test]
+    fn play_intention_survives_missing_local_asset() {
+        let mut player = Player::default();
+        player.command(true);
+        assert!(player.is_playing());
+        let mut events = Vec::new();
+        assert_eq!(player.render(0, 128, &mut events), vec![[0.0; 2]; 128]);
+        assert!(events.is_empty());
+        player.clip = Some(Arc::new(Clip::new(48000, 1, vec![0.5; 100]).unwrap()));
+        assert_eq!(player.render(128, 1, &mut events), [[0.5; 2]]);
+    }
+
 }

@@ -139,7 +139,7 @@ player:Play()
 audio.step(750 / 48000)
 task.wait()
 assert(ended == 1 and awaited)
-near(player.TimePosition, 0.03125)
+near(player.TimePosition, 0)
 assert(not player.IsPlaying)
 
 player.PlaybackRegion = NumberRange.new(0)
