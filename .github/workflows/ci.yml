@@ -23,7 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
@@ -37,7 +38,16 @@ jobs:
       - name: Execute all smoke tests
         run: python scripts/run_smoke.py
       - name: Test audio comparison tool
+        if: success() || failure()
         run: python scripts/test_audio_compare.py
+      - uses: actions/cache/save@v4
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

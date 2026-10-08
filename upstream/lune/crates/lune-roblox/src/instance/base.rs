@@ -1,26 +1,16 @@
 #![allow(clippy::items_after_statements)]
 
 use mlua::prelude::*;
-
-use rbx_dom_weak::{
-    Instance as DomInstance,
-    types::{Variant as DomValue, VariantType as DomType},
-};
-
+use rbx_dom_weak::{Instance as DomInstance, types::{Variant as DomValue, VariantType as DomType}};
 use crate::{
     datatypes::{
         attributes::{ensure_valid_attribute_name, ensure_valid_attribute_value},
         conversion::{DomValueToLua, LuaToDomValue},
-        types::EnumItem,
-        userdata_impl_eq, userdata_impl_to_string,
+        types::EnumItem, userdata_impl_eq, userdata_impl_to_string,
     },
     shared::instance::{class_is_a, find_property_info},
 };
-
-use super::{
-    Instance, data_model, instance_to_lua, instances_to_lua, opt_instance_to_lua,
-    registry::InstanceRegistry, rekey_cache_after_transfer,
-};
+use super::{Instance, data_model, instance_to_lua, instances_to_lua, opt_instance_to_lua, registry::InstanceRegistry, rekey_cache_after_transfer};
 
 #[allow(clippy::too_many_lines)]
 pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
@@ -29,37 +19,21 @@ pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
         userdata_impl_to_string(lua, this, ())
     });
     m.add_meta_method(LuaMetaMethod::Eq, userdata_impl_eq);
-    // NOTE: Index / NewIndex are registered as meta *functions* (not methods)
-    // so we can copy the (Copy) Instance out and immediately drop the borrow on
-    // the userdata. That lets us hand the *canonical* userdata to user-registered
-    // property getters/setters - preserving instance identity - without risking a
-    // re-borrow error if their callback calls a method on the passed instance.
-    m.add_meta_function(
-        LuaMetaMethod::Index,
-        |lua, (this, prop_name): (LuaAnyUserData, String)| {
-            let inst = *this.borrow::<Instance>()?;
-            instance_property_get(lua, inst, &this, prop_name)
-        },
-    );
-    m.add_meta_function(
-        LuaMetaMethod::NewIndex,
-        |lua, (this, prop_name, prop_value): (LuaAnyUserData, String, LuaValue)| {
-            let inst = *this.borrow::<Instance>()?;
-            instance_property_set(lua, inst, &this, prop_name, prop_value)
-        },
-    );
+    // Copy Instance out before invoking user callbacks so canonical userdata can be reborrowed.
+    m.add_meta_function(LuaMetaMethod::Index, |lua, (this, prop_name): (LuaAnyUserData, String)| {
+        let inst = *this.borrow::<Instance>()?;
+        instance_property_get(lua, inst, &this, prop_name)
+    });
+    m.add_meta_function(LuaMetaMethod::NewIndex, |lua, (this, prop_name, prop_value): (LuaAnyUserData, String, LuaValue)| {
+        let inst = *this.borrow::<Instance>()?;
+        instance_property_set(lua, inst, &this, prop_name, prop_value)
+    });
     m.add_method("Clone", |lua, this, ()| {
         ensure_not_destroyed(this)?;
         instance_to_lua(lua, this.clone_instance())
     });
-    m.add_method_mut("Destroy", |_, this, ()| {
-        this.destroy();
-        Ok(())
-    });
-    m.add_method_mut("ClearAllChildren", |_, this, ()| {
-        this.clear_all_children();
-        Ok(())
-    });
+    m.add_method_mut("Destroy", |_, this, ()| { this.destroy(); Ok(()) });
+    m.add_method_mut("ClearAllChildren", |_, this, ()| { this.clear_all_children(); Ok(()) });
     m.add_method("GetChildren", |lua, this, ()| {
         ensure_not_destroyed(this)?;
         instances_to_lua(lua, this.get_children())
@@ -70,96 +44,53 @@ pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
     });
     m.add_method("QueryDescendants", |lua, this, selector: String| {
         ensure_not_destroyed(this)?;
-        let matches =
-            super::query::query_descendants(*this, &selector).map_err(LuaError::runtime)?;
+        let matches = super::query::query_descendants(*this, &selector).map_err(LuaError::runtime)?;
         instances_to_lua(lua, matches)
     });
     m.add_method("GetFullName", |lua, this, ()| {
         ensure_not_destroyed(this)?;
         this.get_full_name().into_lua(lua)
     });
-    m.add_method("GetDebugId", |lua, this, ()| {
-        this.dom_ref.to_string().into_lua(lua)
-    });
+    m.add_method("GetDebugId", |lua, this, ()| this.dom_ref.to_string().into_lua(lua));
     m.add_method("FindFirstAncestor", |lua, this, name: String| {
         ensure_not_destroyed(this)?;
         opt_instance_to_lua(lua, this.find_ancestor(|child| child.name == name))
     });
-    m.add_method(
-        "FindFirstAncestorOfClass",
-        |lua, this, class_name: String| {
-            ensure_not_destroyed(this)?;
-            opt_instance_to_lua(lua, this.find_ancestor(|child| child.class == class_name))
-        },
-    );
-    m.add_method(
-        "FindFirstAncestorWhichIsA",
-        |lua, this, class_name: String| {
-            ensure_not_destroyed(this)?;
-            opt_instance_to_lua(
-                lua,
-                this.find_ancestor(|child| class_is_a(child.class, &class_name).unwrap_or(false)),
-            )
-        },
-    );
-    m.add_method(
-        "FindFirstChild",
-        |lua, this, (name, recursive): (String, Option<bool>)| {
-            ensure_not_destroyed(this)?;
-            let predicate = |child: &DomInstance| child.name == name;
-            if matches!(recursive, Some(true)) {
-                opt_instance_to_lua(lua, this.find_descendant(predicate))
-            } else {
-                opt_instance_to_lua(lua, this.find_child(predicate))
-            }
-        },
-    );
-    m.add_method(
-        "FindFirstChildOfClass",
-        |lua, this, (class_name, recursive): (String, Option<bool>)| {
-            ensure_not_destroyed(this)?;
-            let predicate = |child: &DomInstance| child.class == class_name;
-            if matches!(recursive, Some(true)) {
-                opt_instance_to_lua(lua, this.find_descendant(predicate))
-            } else {
-                opt_instance_to_lua(lua, this.find_child(predicate))
-            }
-        },
-    );
-    m.add_method(
-        "FindFirstChildWhichIsA",
-        |lua, this, (class_name, recursive): (String, Option<bool>)| {
-            ensure_not_destroyed(this)?;
-            let predicate =
-                |child: &DomInstance| class_is_a(child.class, &class_name).unwrap_or(false);
-            if matches!(recursive, Some(true)) {
-                opt_instance_to_lua(lua, this.find_descendant(predicate))
-            } else {
-                opt_instance_to_lua(lua, this.find_child(predicate))
-            }
-        },
-    );
-    m.add_method("IsA", |_, this, class_name: String| {
-        Ok(class_is_a(this.class_name, class_name).unwrap_or(false))
+    m.add_method("FindFirstAncestorOfClass", |lua, this, class_name: String| {
+        ensure_not_destroyed(this)?;
+        opt_instance_to_lua(lua, this.find_ancestor(|child| child.class == class_name))
     });
-    m.add_method(
-        "IsAncestorOf",
-        |_, this, instance: LuaUserDataRef<Instance>| {
-            ensure_not_destroyed(this)?;
-            Ok(instance
-                .find_ancestor(|ancestor| ancestor.referent() == this.dom_ref)
-                .is_some())
-        },
-    );
-    m.add_method(
-        "IsDescendantOf",
-        |_, this, instance: LuaUserDataRef<Instance>| {
-            ensure_not_destroyed(this)?;
-            Ok(this
-                .find_ancestor(|ancestor| ancestor.referent() == instance.dom_ref)
-                .is_some())
-        },
-    );
+    m.add_method("FindFirstAncestorWhichIsA", |lua, this, class_name: String| {
+        ensure_not_destroyed(this)?;
+        opt_instance_to_lua(lua, this.find_ancestor(|child| class_is_a(child.class, &class_name).unwrap_or(false)))
+    });
+    m.add_method("FindFirstChild", |lua, this, (name, recursive): (String, Option<bool>)| {
+        ensure_not_destroyed(this)?;
+        let predicate = |child: &DomInstance| child.name == name;
+        if matches!(recursive, Some(true)) { opt_instance_to_lua(lua, this.find_descendant(predicate)) }
+        else { opt_instance_to_lua(lua, this.find_child(predicate)) }
+    });
+    m.add_method("FindFirstChildOfClass", |lua, this, (class_name, recursive): (String, Option<bool>)| {
+        ensure_not_destroyed(this)?;
+        let predicate = |child: &DomInstance| child.class == class_name;
+        if matches!(recursive, Some(true)) { opt_instance_to_lua(lua, this.find_descendant(predicate)) }
+        else { opt_instance_to_lua(lua, this.find_child(predicate)) }
+    });
+    m.add_method("FindFirstChildWhichIsA", |lua, this, (class_name, recursive): (String, Option<bool>)| {
+        ensure_not_destroyed(this)?;
+        let predicate = |child: &DomInstance| class_is_a(child.class, &class_name).unwrap_or(false);
+        if matches!(recursive, Some(true)) { opt_instance_to_lua(lua, this.find_descendant(predicate)) }
+        else { opt_instance_to_lua(lua, this.find_child(predicate)) }
+    });
+    m.add_method("IsA", |_, this, class_name: String| Ok(class_is_a(this.class_name, class_name).unwrap_or(false)));
+    m.add_method("IsAncestorOf", |_, this, instance: LuaUserDataRef<Instance>| {
+        ensure_not_destroyed(this)?;
+        Ok(instance.find_ancestor(|ancestor| ancestor.referent() == this.dom_ref).is_some())
+    });
+    m.add_method("IsDescendantOf", |_, this, instance: LuaUserDataRef<Instance>| {
+        ensure_not_destroyed(this)?;
+        Ok(this.find_ancestor(|ancestor| ancestor.referent() == instance.dom_ref).is_some())
+    });
     m.add_method("GetAttribute", |lua, this, name: String| {
         ensure_not_destroyed(this)?;
         match this.get_attribute(name) {
@@ -171,244 +102,116 @@ pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
         ensure_not_destroyed(this)?;
         let attributes = this.get_attributes();
         let tab = lua.create_table_with_capacity(0, attributes.len())?;
-        for (key, value) in attributes {
-            tab.set(key, LuaValue::dom_value_to_lua(lua, &value)?)?;
-        }
+        for (key, value) in attributes { tab.set(key, LuaValue::dom_value_to_lua(lua, &value)?)?; }
         Ok(tab)
     });
-    m.add_method(
-        "SetAttribute",
-        |lua, this, (attribute_name, lua_value): (String, LuaValue)| {
-            ensure_not_destroyed(this)?;
-            ensure_valid_attribute_name(&attribute_name)?;
-            if lua_value.is_nil() || lua_value.is_null() {
-                this.remove_attribute(attribute_name);
-                Ok(())
-            } else {
-                match lua_value.lua_to_dom_value(lua, None) {
-                    Ok(dom_value) => {
-                        ensure_valid_attribute_value(&dom_value)?;
-                        this.set_attribute(attribute_name, dom_value);
-                        Ok(())
-                    }
-                    Err(e) => Err(e.into()),
+    m.add_method("SetAttribute", |lua, this, (attribute_name, lua_value): (String, LuaValue)| {
+        ensure_not_destroyed(this)?;
+        ensure_valid_attribute_name(&attribute_name)?;
+        if lua_value.is_nil() || lua_value.is_null() {
+            this.remove_attribute(attribute_name);
+            Ok(())
+        } else {
+            match lua_value.lua_to_dom_value(lua, None) {
+                Ok(dom_value) => {
+                    ensure_valid_attribute_value(&dom_value)?;
+                    this.set_attribute(attribute_name, dom_value);
+                    Ok(())
                 }
+                Err(e) => Err(e.into()),
             }
-        },
-    );
-    m.add_method("GetTags", |_, this, ()| {
-        ensure_not_destroyed(this)?;
-        Ok(this.get_tags())
+        }
     });
-    m.add_method("HasTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        Ok(this.has_tag(tag))
-    });
-    m.add_method("AddTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        this.add_tag(tag);
-        Ok(())
-    });
-    m.add_method("RemoveTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        this.remove_tag(tag);
-        Ok(())
-    });
+    m.add_method("GetTags", |_, this, ()| { ensure_not_destroyed(this)?; Ok(this.get_tags()) });
+    m.add_method("HasTag", |_, this, tag: String| { ensure_not_destroyed(this)?; Ok(this.has_tag(tag)) });
+    m.add_method("AddTag", |_, this, tag: String| { ensure_not_destroyed(this)?; this.add_tag(tag); Ok(()) });
+    m.add_method("RemoveTag", |_, this, tag: String| { ensure_not_destroyed(this)?; this.remove_tag(tag); Ok(()) });
 }
 
 fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {
-    if inst.is_destroyed() {
-        Err(LuaError::RuntimeError(
-            "Instance has been destroyed".to_string(),
-        ))
-    } else {
-        Ok(())
-    }
+    if inst.is_destroyed() { Err(LuaError::RuntimeError("Instance has been destroyed".to_string())) }
+    else { Ok(()) }
 }
 
-/*
-    Gets a property value for an instance.
-
-    Getting a value does the following:
-
-    1. Check if it is a special property like "ClassName", "Name" or "Parent"
-    2. Check if a property exists for the wanted name
-        2a. Get an existing instance property OR
-        2b. Get a property from a known default value
-    3. Get a current child of the instance
-    4. No valid property or instance found, throw error
-*/
-fn instance_property_get(
-    lua: &Lua,
-    this: Instance,
-    this_ud: &LuaAnyUserData,
-    prop_name: String,
-) -> LuaResult<LuaValue> {
+fn instance_property_get(lua: &Lua, this: Instance, this_ud: &LuaAnyUserData, prop_name: String) -> LuaResult<LuaValue> {
     match prop_name.as_str() {
         "ClassName" => return this.get_class_name().into_lua(lua),
-        "Parent" => {
-            return opt_instance_to_lua(lua, this.get_parent());
-        }
+        "Parent" => return opt_instance_to_lua(lua, this.get_parent()),
         _ => {}
     }
-
     ensure_not_destroyed(&this)?;
+    if prop_name.as_str() == "Name" { return this.get_name().into_lua(lua); }
 
-    if prop_name.as_str() == "Name" {
-        return this.get_name().into_lua(lua);
+    // Explicit engine extensions override stored/default reflection values.
+    // Instance identity and hierarchy fields above remain controlled by the DOM.
+    if let Some(getter) = InstanceRegistry::find_property_getter(lua, &this, &prop_name) {
+        return getter.call(this_ud.clone());
     }
 
     if let Some(info) = find_property_info(this.class_name, &prop_name) {
         if let Some(prop) = this.get_property(&prop_name) {
             if let DomValue::Enum(enum_value) = prop {
-                let enum_name = info.enum_name.ok_or_else(|| {
-                    LuaError::RuntimeError(format!(
-                        "Failed to get property '{prop_name}' - encountered unknown enum",
-                    ))
-                })?;
+                let enum_name = info.enum_name.ok_or_else(|| LuaError::RuntimeError(format!("Failed to get property '{prop_name}' - encountered unknown enum")))?;
                 EnumItem::from_enum_name_and_value(&enum_name, enum_value.to_u32())
-                    .ok_or_else(|| {
-                        LuaError::RuntimeError(format!(
-                            "Failed to get property '{}' - Enum.{} does not contain numeric value {}",
-                            prop_name, enum_name, enum_value.to_u32()
-                        ))
-                    })?
+                    .ok_or_else(|| LuaError::RuntimeError(format!("Failed to get property '{}' - Enum.{} does not contain numeric value {}", prop_name, enum_name, enum_value.to_u32())))?
                     .into_lua(lua)
             } else if let DomValue::Ref(referent) = prop {
-                // Must use the helper instead of dom_value_to_lua to preserve stable identity
                 opt_instance_to_lua(lua, Instance::new_opt(this.dom_id, referent))
-            } else {
-                Ok(LuaValue::dom_value_to_lua(lua, &prop)?)
-            }
+            } else { Ok(LuaValue::dom_value_to_lua(lua, &prop)?) }
         } else if let (Some(enum_name), Some(enum_value)) = (info.enum_name, info.enum_default) {
             EnumItem::from_enum_name_and_value(&enum_name, enum_value)
-                .ok_or_else(|| {
-                    LuaError::RuntimeError(format!(
-                        "Failed to get property '{prop_name}' - Enum.{enum_name} does not contain numeric value {enum_value}",
-                    ))
-                })?
+                .ok_or_else(|| LuaError::RuntimeError(format!("Failed to get property '{prop_name}' - Enum.{enum_name} does not contain numeric value {enum_value}")))?
                 .into_lua(lua)
         } else if let Some(prop_default) = info.value_default {
             Ok(LuaValue::dom_value_to_lua(lua, prop_default)?)
         } else if info.value_type.is_some() {
-            if info.value_type == Some(DomType::Ref) {
-                Ok(LuaValue::Nil)
-            } else {
-                Err(LuaError::RuntimeError(format!(
-                    "Failed to get property '{prop_name}' - missing default value",
-                )))
-            }
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "Failed to get property '{prop_name}' - malformed property info",
-            )))
-        }
+            if info.value_type == Some(DomType::Ref) { Ok(LuaValue::Nil) }
+            else { Err(LuaError::RuntimeError(format!("Failed to get property '{prop_name}' - missing default value"))) }
+        } else { Err(LuaError::RuntimeError(format!("Failed to get property '{prop_name}' - malformed property info"))) }
     } else if let Some(inst) = this.find_child(|inst| inst.name == prop_name) {
         instance_to_lua(lua, inst)
-    } else if let Some(getter) = InstanceRegistry::find_property_getter(lua, &this, &prop_name) {
-        // The canonical userdata is passed - no borrow is held at this point,
-        // so the callback may freely call methods on it.
-        getter.call(this_ud.clone())
     } else if let Some(method) = InstanceRegistry::find_method(lua, &this, &prop_name) {
         Ok(LuaValue::Function(method))
-    } else {
-        Err(LuaError::RuntimeError(format!(
-            "{prop_name} is not a valid member of {this}",
-        )))
-    }
+    } else { Err(LuaError::RuntimeError(format!("{prop_name} is not a valid member of {this}"))) }
 }
 
-/*
-    Sets a property value for an instance.
-
-    Setting a value does the following:
-
-    1. Check if it is a special property like "ClassName", "Name" or "Parent"
-    2. Check if a property exists for the wanted name
-        2a. Set a strict enum from a given EnumItem OR
-        2b. Set a normal property from a given value
-*/
-fn instance_property_set(
-    lua: &Lua,
-    this: Instance,
-    this_ud: &LuaAnyUserData,
-    prop_name: String,
-    prop_value: LuaValue,
-) -> LuaResult<()> {
+fn instance_property_set(lua: &Lua, this: Instance, this_ud: &LuaAnyUserData, prop_name: String, prop_value: LuaValue) -> LuaResult<()> {
     ensure_not_destroyed(&this)?;
-
     match prop_name.as_str() {
-        "ClassName" => {
-            return Err(LuaError::RuntimeError(
-                "Failed to set ClassName - property is read-only".to_string(),
-            ));
-        }
-        "Name" => {
-            let name = String::from_lua(prop_value, lua)?;
-            this.set_name(name);
-            return Ok(());
-        }
+        "ClassName" => return Err(LuaError::RuntimeError("Failed to set ClassName - property is read-only".to_string())),
+        "Name" => { this.set_name(String::from_lua(prop_value, lua)?); return Ok(()); }
         "Parent" => {
             if this.get_class_name() == data_model::CLASS_NAME {
-                return Err(LuaError::RuntimeError(
-                    "Failed to set Parent - DataModel can not be reparented".to_string(),
-                ));
+                return Err(LuaError::RuntimeError("Failed to set Parent - DataModel can not be reparented".to_string()));
             }
-
-            // `.map(|p| *p)` copies the Instance out and drops the borrow on the
-            // parent userdata, so the cache re-key below can borrow freely.
             type Parent = Option<LuaUserDataRef<Instance>>;
             let parent_inst = Parent::from_lua(prop_value, lua)?.map(|p| *p);
-
             let old_dom_id = this.dom_id;
             let moved = this.set_parent(parent_inst);
-
-            // A cross-dom transfer moves this instance (and its descendants)
-            // into the parent's dom. Re-key any cached userdata for the moved
-            // subtree and update the dom_id stored inside each (including this
-            // one) so instance identity is preserved across the transfer.
-            if let Some(new_dom_id) = parent_inst.map(|p| p.dom_id)
-                && new_dom_id != old_dom_id
-            {
+            if let Some(new_dom_id) = parent_inst.map(|p| p.dom_id) && new_dom_id != old_dom_id {
                 rekey_cache_after_transfer(lua, old_dom_id, new_dom_id, &moved)?;
             }
-
             return Ok(());
         }
         _ => {}
     }
-
+    if let Some(setter) = InstanceRegistry::find_property_setter(lua, &this, &prop_name) {
+        return setter.call((this_ud.clone(), prop_value));
+    }
     if let Some(info) = find_property_info(this.class_name, &prop_name) {
         if let Some(enum_name) = info.enum_name {
             match LuaUserDataRef::<EnumItem>::from_lua(prop_value, lua) {
                 Ok(given_enum) if given_enum.parent.desc.name == enum_name => {
-                    this.set_property(prop_name, DomValue::EnumItem((*given_enum).clone().into()));
-                    Ok(())
+                    this.set_property(prop_name, DomValue::EnumItem((*given_enum).clone().into())); Ok(())
                 }
-                Ok(given_enum) => Err(LuaError::RuntimeError(format!(
-                    "Failed to set property '{}' - expected Enum.{}, got Enum.{}",
-                    prop_name, enum_name, given_enum.parent.desc.name
-                ))),
+                Ok(given_enum) => Err(LuaError::RuntimeError(format!("Failed to set property '{}' - expected Enum.{}, got Enum.{}", prop_name, enum_name, given_enum.parent.desc.name))),
                 Err(e) => Err(e),
             }
         } else if let Some(dom_type) = info.value_type {
             match prop_value.lua_to_dom_value(lua, Some(dom_type)) {
-                Ok(dom_value) => {
-                    this.set_property(prop_name, dom_value);
-                    Ok(())
-                }
+                Ok(dom_value) => { this.set_property(prop_name, dom_value); Ok(()) }
                 Err(e) => Err(e.into()),
             }
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "Failed to set property '{prop_name}' - malformed property info",
-            )))
-        }
-    } else if let Some(setter) = InstanceRegistry::find_property_setter(lua, &this, &prop_name) {
-        setter.call((this_ud.clone(), prop_value))
-    } else {
-        Err(LuaError::RuntimeError(format!(
-            "{prop_name} is not a valid member of {this}",
-        )))
-    }
+        } else { Err(LuaError::RuntimeError(format!("Failed to set property '{prop_name}' - malformed property info"))) }
+    } else { Err(LuaError::RuntimeError(format!("{prop_name} is not a valid member of {this}"))) }
 }
