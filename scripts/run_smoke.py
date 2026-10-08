@@ -42,5 +42,6 @@ def run_test(name, command, timeout=60):
 for scene in scenes:
     run_test(scene, [str(binary), "run", f"examples/{scene}.luau"])
 run_test("audio_cli_regression", [sys.executable, "scripts/audio_cli_regression.py"], timeout=90)
+run_test("audio_spatial_cli_regression", [sys.executable, "scripts/audio_spatial_cli_regression.py"], timeout=90)
 (output / "summary.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
 sys.exit(0 if all(item["passed"] for item in results) else 1)
