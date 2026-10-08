@@ -51,6 +51,12 @@ impl AudioWorld {
     fn changed(&mut self, instance: Instance, property: &str) {
         self.pending.push(Event::Property(instance, property.into()));
     }
+    fn register(&mut self, id: String, clip: Arc<Clip>) -> Result<(), String> {
+        let used = self.assets.iter().filter(|(key, _)| *key != &id).map(|(_, clip)| clip.samples.len() * 4).sum::<usize>();
+        if used + clip.samples.len() * 4 > 512 * 1024 * 1024 { return Err("decoded audio cache exceeds 512 MiB".into()); }
+        self.assets.insert(id, clip);
+        Ok(())
+    }
     fn resolve(&mut self, id: &str) -> Result<Arc<Clip>, String> {
         if let Some(clip) = self.assets.get(id) { return Ok(clip.clone()); }
         let root = self.root.as_ref().ok_or_else(|| format!("unmapped audio asset {id:?}; use audio.registerAsset or audio.setAssetRoot"))?;
@@ -66,13 +72,14 @@ impl AudioWorld {
         let path = candidates.into_iter().find_map(|path| path.canonicalize().ok().filter(|path| path.starts_with(root) && path.is_file()))
             .ok_or_else(|| format!("audio asset not found inside asset root: {id}"))?;
         let clip = Arc::new(pcm::decode(&path)?);
-        self.assets.insert(id.into(), clip.clone());
+        self.register(id.into(), clip.clone())?;
         Ok(clip)
     }
     fn refresh_player(&mut self, instance: Instance, force_load: bool) {
         let id = asset_id(&instance);
         let instance_key = key(&instance);
         let entry = self.players.entry(instance_key.clone()).or_insert_with(|| (instance, Player { position: number(&instance, "TimePosition", 0.0), ..Default::default() }));
+        entry.0 = instance;
         if entry.1.asset != id {
             entry.1.asset = id.clone();
             entry.1.clip = None;
@@ -112,7 +119,10 @@ impl AudioWorld {
         graph
     }
     fn command(&mut self, instance: Instance, play: bool, at: Option<f64>) -> LuaResult<Option<u64>> {
-        if let Some(at) = at { finite(at, "atTime")?; if at < 0.0 { return Err(LuaError::runtime("atTime cannot be negative")); } }
+        if let Some(at) = at {
+            finite(at, "atTime")?;
+            if at < 0.0 || at * SAMPLE_RATE as f64 > u64::MAX as f64 { return Err(LuaError::runtime("atTime is outside the supported mixer clock range")); }
+        }
         self.refresh_player(instance, play);
         let instance_key = key(&instance);
         if play && self.players[&instance_key].1.clip.is_none() {
@@ -121,12 +131,13 @@ impl AudioWorld {
         let before = self.players[&instance_key].1.is_playing();
         let mut action_id = None;
         if let Some(at) = at {
-            self.next_action += 1;
+            self.next_action = self.next_action.checked_add(1).ok_or_else(|| LuaError::runtime("audio action ID range exhausted"))?;
             action_id = Some(self.next_action);
             if at > self.clock as f64 / SAMPLE_RATE as f64 {
-                if at * SAMPLE_RATE as f64 > u64::MAX as f64 { return Err(LuaError::runtime("scheduled audio time exceeds clock range")); }
                 let sample = (at * SAMPLE_RATE as f64 - 1e-7).ceil() as u64;
-                self.players.get_mut(&instance_key).unwrap().1.actions.insert((sample, self.next_action), play);
+                let player = &mut self.players.get_mut(&instance_key).unwrap().1;
+                if player.actions.len() >= 65_536 { return Err(LuaError::runtime("scheduled audio action budget exceeded")); }
+                player.actions.insert((sample, self.next_action), play);
             } else { self.players.get_mut(&instance_key).unwrap().1.command(play); }
         } else { self.players.get_mut(&instance_key).unwrap().1.command(play); }
         if before != self.players[&instance_key].1.is_playing() { self.changed(instance, "IsPlaying"); }
@@ -144,7 +155,7 @@ impl AudioWorld {
         if let Some(capture) = &self.capture {
             if capture.samples.len() + frames > capture.max_frames { return Err(LuaError::runtime("audio capture duration budget exceeded")); }
         }
-        self.fractional_samples = (debt - frames as f64).max(0.0);
+        self.fractional_samples = debt - frames as f64;
         for node in graph.nodes.values().filter(|node| node.get_class_name() == "AudioPlayer") {
             self.refresh_player(*node, false);
             let entry = &mut self.players.get_mut(&key(node)).unwrap().1;
@@ -218,7 +229,7 @@ pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTable>
         let state = world.clone();
         let getter = lua.create_function(move |lua, instance: LuaUserDataRef<Instance>| {
             let id = asset_id(&instance);
-            if name == "AudioContent" { Content::from(DomContent::from_uri(id)).into_lua(lua) }
+            if name == "AudioContent" { Content::from(if id.is_empty() { DomContent::none() } else { DomContent::from_uri(id) }).into_lua(lua) }
             else { id.into_lua(lua) }
         })?;
         let setter = lua.create_function(move |lua, (instance, value): (LuaUserDataRef<Instance>, LuaValue)| {
@@ -229,7 +240,7 @@ pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTable>
             } else { String::from_lua(value, lua)? };
             instance.set_property("Asset", Variant::String(id.clone()));
             instance.set_property("AssetId", Variant::String(id.clone()));
-            instance.set_property("AudioContent", Variant::Content(DomContent::from_uri(id)));
+            instance.set_property("AudioContent", Variant::Content(if id.is_empty() { DomContent::none() } else { DomContent::from_uri(id) }));
             { let mut state = state.borrow_mut(); state.refresh_player(*instance, false); state.changed(*instance, name); }
             dispatch(lua, &state)
         })?;
@@ -320,6 +331,7 @@ pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTable>
             let samples = { let mut state = state.borrow_mut(); state.refresh_player(*instance, true);
                 state.players[&key(&instance)].1.clip.as_ref().map_or_else(Vec::new, |clip| clip.waveform(requested.min as f64, requested.max as f64, count))
             };
+            dispatch(&lua, &state)?;
             lua.create_sequence_from(samples)
         }
     })?)?;
@@ -383,17 +395,17 @@ fn install_module(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTab
     module.set("registerAsset", lua.create_function(move |_, (id, path): (String, String)| {
         let clip = Arc::new(pcm::decode(Path::new(&path)).map_err(LuaError::runtime)?);
         let duration = clip.duration();
-        state.borrow_mut().assets.insert(id, clip);
+        state.borrow_mut().register(id, clip).map_err(LuaError::runtime)?;
         Ok(duration)
     })?)?;
     let state = world.clone();
     module.set("registerPCM", lua.create_function(move |_, (id, rate, channels, buffer): (String, u32, usize, LuaBuffer)| {
-        let bytes = buffer.as_slice();
-        if bytes.len() % 4 != 0 || bytes.len() > pcm::MAX_FRAMES * 2 * 4 { return Err(LuaError::runtime("PCM buffer length is invalid")); }
+        if buffer.len() % 4 != 0 || buffer.len() > pcm::MAX_FRAMES * 2 * 4 { return Err(LuaError::runtime("PCM buffer length is invalid")); }
+        let bytes = buffer.to_vec();
         let samples = bytes.chunks_exact(4).map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())).collect();
         let clip = Arc::new(Clip::new(rate, channels, samples).map_err(LuaError::runtime)?);
         let duration = clip.duration();
-        state.borrow_mut().assets.insert(id, clip);
+        state.borrow_mut().register(id, clip).map_err(LuaError::runtime)?;
         Ok(duration)
     })?)?;
     let state = world.clone();
@@ -408,13 +420,18 @@ fn install_module(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTab
         let mut source = None;
         if let Some(options) = options {
             max_seconds = options.get::<Option<f64>>("maxSeconds")?.unwrap_or(max_seconds);
-            if let Some(value) = options.get::<Option<LuaAnyUserData>>("source")? { source = Some(key(&value.borrow::<Instance>()?)); }
+            if let Some(value) = options.get::<Option<LuaAnyUserData>>("source")? {
+                let instance = *value.borrow::<Instance>()?;
+                if !graph::CLASSES.contains(&instance.get_class_name()) { return Err(LuaError::runtime("capture source must be a supported audio node")); }
+                source = Some(key(&instance));
+            }
         }
         finite(max_seconds, "maxSeconds")?;
         if !(0.0..=600.0).contains(&max_seconds) { return Err(LuaError::runtime("capture limit must be between 0 and 600 seconds")); }
         let mut state = state.borrow_mut();
         if state.capture.is_some() { return Err(LuaError::runtime("an audio capture is already active")); }
-        state.capture = Some(Capture { source, samples: Vec::new(), max_frames: (max_seconds * SAMPLE_RATE as f64).round() as usize, start: state.clock });
+        let start = state.clock;
+        state.capture = Some(Capture { source, samples: Vec::new(), max_frames: (max_seconds * SAMPLE_RATE as f64).round() as usize, start });
         Ok(())
     })?)?;
     let state = world.clone();
@@ -462,7 +479,8 @@ fn install_module(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTab
         result.set("audioPlayer", true)?; result.set("scheduledPlayback", true)?; result.set("wireGraph", true)?;
         result.set("audioFader", true)?; result.set("audioAnalyzer", "approximate Hann-window spectrum")?;
         result.set("spatialAudio", false)?; result.set("robloxDspParity", false)?;
-        result.set("unsupported", lua.create_sequence_from(["AudioEmitter", "AudioListener", "AudioReverb", "AudioEcho", "AudioFilter", "AudioEqualizer", "AudioCompressor", "AudioPitchShifter", "AudioDeviceInput", "AudioRecorder", "AudioTextToSpeech", "AudioSpeechToText", "multichannel output", "replication"])?;
+        let unsupported = ["AudioEmitter", "AudioListener", "AudioReverb", "AudioEcho", "AudioFilter", "AudioEqualizer", "AudioCompressor", "AudioPitchShifter", "AudioDeviceInput", "AudioRecorder", "AudioTextToSpeech", "AudioSpeechToText", "multichannel output", "replication"];
+        result.set("unsupported", lua.create_sequence_from(unsupported)?)?;
         Ok(result)
     })?)?;
     Ok(module)
@@ -482,7 +500,7 @@ fn method(lua: &Lua, class: &str, name: &str, function: LuaFunction) -> LuaResul
 fn finite(value: f64, name: &str) -> LuaResult<f64> {
     if value.is_finite() { Ok(value) } else { Err(LuaError::runtime(format!("{name} must be finite"))) }
 }
-fn key(instance: &Instance) -> String { format!("{}:{}", instance.dom_id, instance.dom_ref) }
+fn key(instance: &Instance) -> String { instance.dom_ref.to_string() }
 fn number(instance: &Instance, name: &str, default: f64) -> f64 {
     let value = match instance.get_property(name) { Some(Variant::Float64(value)) => value, Some(Variant::Float32(value)) => value as f64, Some(Variant::Int32(value)) => value as f64, _ => default };
     if value.is_finite() { value } else { default }
