@@ -22,6 +22,15 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Bundle exact source snapshot
+        if: runner.os == 'Linux'
+        run: git archive --format=zip --output=yune-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: yune-source
+          path: yune-source.zip
+          retention-days: 7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache/restore@v4
         id: rust-cache
