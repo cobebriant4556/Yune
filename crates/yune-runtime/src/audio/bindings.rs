@@ -101,17 +101,19 @@ pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>) -> LuaResult<LuaTable>
         Ok(result)
     })?)?;
     let state = world.clone();
-    method(lua, "AudioPlayer", "GetWaveformAsync", lua.create_async_function(move |lua, (instance, requested, count): (LuaUserDataRef<Instance>, LuaUserDataRef<NumberRange>, usize)| {
+    method(lua, "AudioPlayer", "GetWaveformAsync", lua.create_async_function(move |lua, (instance, requested, count): (LuaUserDataRef<Instance>, LuaUserDataRef<NumberRange>, f64)| {
         let state = state.clone();
         async move {
-            if count > 65_536 { return Err(LuaError::runtime("waveform samples must not exceed 65536")); }
+            let count = finite(count, "waveform sample count")?.max(0.0).floor();
+            if count > 65_536.0 { return Err(LuaError::runtime("waveform samples must not exceed 65536")); }
             let requested: DomRange = (*requested).into();
-            finite(requested.min as f64, "waveform start")?; finite(requested.max as f64, "waveform end")?;
+            let start = finite(requested.min as f64, "waveform start")?.max(0.0);
+            let end = finite(requested.max as f64, "waveform end")?.max(0.0);
             let samples = { let mut state = state.borrow_mut(); state.refresh_player(*instance, true);
-                state.players[&key(&instance)].1.clip.as_ref().map_or_else(Vec::new, |clip| clip.waveform(requested.min as f64, requested.max as f64, count))
+                state.players[&key(&instance)].1.clip.as_ref().map_or_else(Vec::new, |clip| clip.waveform(start, end, count as usize))
             };
             dispatch(&lua, &state)?;
-            if samples.is_empty() { Ok(LuaValue::Nil) } else { Ok(LuaValue::Table(lua.create_sequence_from(samples)?)) }
+            lua.create_sequence_from(samples)
         }
     })?)?;
     let state = world.clone();
