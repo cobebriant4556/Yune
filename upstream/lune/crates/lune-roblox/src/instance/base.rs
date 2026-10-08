@@ -1,7 +1,7 @@
 #![allow(clippy::items_after_statements)]
 
 use mlua::prelude::*;
-use rbx_dom_weak::{Instance as DomInstance, types::{Variant as DomValue, VariantType as DomType}};
+use rbx_dom_weak::{Instance as DomInstance, types::{Ref as DomRef, Variant as DomValue, VariantType as DomType}};
 use crate::{
     datatypes::{
         attributes::{ensure_valid_attribute_name, ensure_valid_attribute_value},
@@ -208,6 +208,10 @@ fn instance_property_set(lua: &Lua, this: Instance, this_ud: &LuaAnyUserData, pr
                 Err(e) => Err(e),
             }
         } else if let Some(dom_type) = info.value_type {
+            if dom_type == DomType::Ref && prop_value.is_nil() {
+                this.set_property(prop_name, DomValue::Ref(DomRef::none()));
+                return Ok(());
+            }
             match prop_value.lua_to_dom_value(lua, Some(dom_type)) {
                 Ok(dom_value) => { this.set_property(prop_name, dom_value); Ok(()) }
                 Err(e) => Err(e.into()),
