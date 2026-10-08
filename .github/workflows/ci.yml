@@ -14,12 +14,12 @@ concurrency:
 
 jobs:
   build:
-    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,6 +36,8 @@ jobs:
       - run: cargo build -p yune
       - name: Execute all smoke tests
         run: python scripts/run_smoke.py
+      - name: Test audio comparison tool
+        run: python scripts/test_audio_compare.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -44,4 +46,3 @@ jobs:
             test-results/
             yune-smoke.png
             yune-visual-smoke.png
-          if-no-files-found: warn
