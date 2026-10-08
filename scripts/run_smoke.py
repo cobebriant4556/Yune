@@ -29,7 +29,7 @@ scanline = b"\x00" + bytes([255, 0, 0, 255]) * 2
 png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
 png += chunk(b"IDAT", zlib.compress(scanline * 2)) + chunk(b"IEND", b"")
 (assets / "456").write_bytes(png)
-scenes = ["require_regression", "runtime_smoke", "cframe_regression", "render_smoke", "visual_smoke", "asset_regression", "rig_regression", "gui_regression", "defaults_regression", "audio_regression", "audio_edges_regression", "audio_spatial_regression", "audio_effects_regression"]
+scenes = ["require_regression", "runtime_smoke", "cframe_regression", "render_smoke", "visual_smoke", "asset_regression", "rig_regression", "gui_regression", "defaults_regression", "audio_regression", "audio_edges_regression", "audio_spatial_regression", "audio_effects_regression", "audio_source_regression"]
 results = []
 
 def run_test(name, command, timeout=60):

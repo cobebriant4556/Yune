@@ -154,7 +154,9 @@ pub fn install(lua: &Lua, world: Rc<RefCell<AudioWorld>>, module: &LuaTable) -> 
         for name in ["robloxDspParity", "acousticSimulation", "hrtf", "doppler", "serializedAttenuationCurves"] { result.set(name, false)?; }
         result.set("audioAnalyzer", "approximate Hann-window spectrum")?;
         result.set("spatialModel", "mono point sources with equal-power stereo panning; custom and preset attenuation")?;
-        result.set("effectModel", "independent DSP approximations, not calibrated Roblox implementations")?;
+        result.set("effectModel", "mixed: source-derived distortion, limiter and scalar stereo compressor; remaining effects are independent implementations")?;
+        result.set("sourceDerivedEffects", lua.create_sequence_from(["AudioDistortion", "AudioLimiter", "AudioCompressor"])?)?;
+        result.set("sourceDerivedPlayback", "float32 effective regions, deferred readiness, immediate action ID 0, natural-end cursor reset")?;
         result.set("supportedEffects", lua.create_sequence_from(effects::CLASSES.iter().copied())?)?;
         result.set("unsupported", lua.create_sequence_from(["AudioDeviceInput", "AudioRecorder", "AudioTextToSpeech", "AudioSpeechToText", "AudioChannelMixer", "AudioChannelSplitter", "HRTF", "Doppler", "automatic occlusion/diffraction/room acoustics", "multichannel output", "replication"])?)?;
         Ok(result)

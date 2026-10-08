@@ -4,6 +4,7 @@ use rbx_dom_weak::types::Variant;
 use super::{boolean, enum_value, number, pcm::Frame};
 use super::dsp::{self, Biquad, Delay, Ramp, RATE};
 use super::pitch::Pitch;
+use super::source_kernels::{self, Limiter, Compressor};
 
 pub const CLASSES: &[&str] = &["AudioFader", "AudioChorus", "AudioFlanger", "AudioDistortion", "AudioEcho", "AudioEqualizer", "AudioFilter", "AudioCompressor", "AudioLimiter", "AudioGate", "AudioPitchShifter", "AudioReverb", "AudioTremolo"];
 
@@ -63,12 +64,14 @@ fn modulation_delay(flanger: bool, depth: f64, phase: f64) -> f64 {
 }
 
 pub struct Effect {
+    limiter: Limiter,
+    compressor: Compressor,
     delays: Vec<Delay>, filters: [Biquad; 4], phase: f64, gain: f64,
     envelope: f64, gate_open: bool, ramp: Ramp, damping: [[f64; 2]; 4], pitch: Option<Pitch>,
 }
 impl Default for Effect {
     fn default() -> Self {
-        Self { delays: Vec::new(), filters: std::array::from_fn(|_| Biquad::default()), phase: 0.0,
+        Self { limiter: Limiter::default(), compressor: Compressor::default(), delays: Vec::new(), filters: std::array::from_fn(|_| Biquad::default()), phase: 0.0,
             gain: 1.0, envelope: 0.0, gate_open: false, ramp: Ramp::default(), damping: [[0.0; 2]; 4], pitch: None }
     }
 }
@@ -105,13 +108,11 @@ impl Effect {
             }
             "AudioEcho" => self.echo(node, stream),
             "AudioChorus" | "AudioFlanger" => self.modulated_delay(node, stream),
-            "AudioDistortion" => {
-                let level = value(node, "Level");
-                if level == 0.0 { return; }
-                let drive = 1.0 + 30.0 * level;
-                for frame in stream { for sample in frame { *sample = ((f64::from(*sample) * drive).tanh() / drive.tanh()) as f32; } }
-            }
-            "AudioCompressor" | "AudioLimiter" | "AudioGate" => self.dynamics(node, stream, sidechain),
+            "AudioDistortion" => source_kernels::distortion(stream, value(node, "Level") as f32),
+            "AudioLimiter" => self.limiter.process(stream, value(node, "Release") as f32, value(node, "MaxLevel") as f32),
+            "AudioCompressor" => self.compressor.process(stream, sidechain, value(node, "Threshold") as f32, value(node, "Ratio") as f32,
+                value(node, "Attack") as f32, value(node, "Release") as f32, value(node, "MakeupGain") as f32),
+            "AudioGate" => self.dynamics(node, stream, None),
             "AudioTremolo" => self.tremolo(node, stream),
             "AudioReverb" => self.reverb(node, stream),
             "AudioPitchShifter" => {
@@ -177,7 +178,7 @@ impl Effect {
             self.phase = (self.phase + rate).fract();
         }
     }
-    fn dynamics(&mut self, node: &Instance, stream: &mut [Frame], sidechain: Option<&[Frame]>) {
+    fn dynamics(&mut self, node: &Instance, stream: &mut [Frame], _sidechain: Option<&[Frame]>) {
         let class = node.get_class_name();
         let release = dsp::smoothing(value(node, "Release"));
         if class == "AudioGate" {
@@ -197,29 +198,6 @@ impl Effect {
                 for sample in frame { *sample *= self.gain as f32; }
             }
             return;
-        }
-        if class == "AudioLimiter" {
-            let ceiling = dsp::db(value(node, "MaxLevel"));
-            for frame in stream {
-                let peak = f64::from(frame[0].abs().max(frame[1].abs()));
-                let target = (ceiling / peak.max(1e-30)).min(1.0);
-                self.gain = if target < self.gain { target } else { target + release * (self.gain - target) };
-                for sample in frame { *sample = (f64::from(*sample) * self.gain) as f32; }
-            }
-            return;
-        }
-        let attack = dsp::smoothing(value(node, "Attack"));
-        let threshold = value(node, "Threshold");
-        let ratio = value(node, "Ratio");
-        let makeup = dsp::db(value(node, "MakeupGain"));
-        for (index, frame) in stream.iter_mut().enumerate() {
-            let detector = sidechain.map_or(*frame, |samples| samples[index]);
-            let peak = f64::from(detector[0].abs().max(detector[1].abs()));
-            let excess = (20.0 * peak.max(1e-30).log10() - threshold).max(0.0);
-            let target = dsp::db(-excess * (1.0 - 1.0 / ratio));
-            let coefficient = if target < self.gain { attack } else { release };
-            self.gain = target + coefficient * (self.gain - target);
-            for sample in frame { *sample = (f64::from(*sample) * self.gain * makeup) as f32; }
         }
     }
     fn tremolo(&mut self, node: &Instance, stream: &mut [Frame]) {
@@ -331,18 +309,18 @@ mod tests {
         }
     }
     #[test]
-    fn limiter_enforces_stereo_linked_sample_ceiling() {
+    fn limiter_enforces_independent_channel_sample_ceilings() {
         let node = node("AudioLimiter", &[("MaxLevel", -6.0)]);
         let mut stream = vec![[2.0, -1.0]; 1000];
         Effect::default().process(&node, &mut stream, None);
-        for sample in stream { assert!(sample[0] <= dsp::db(-6.0) as f32 + 1e-7); assert!((sample[0] + 2.0 * sample[1]).abs() < 1e-7); }
+        for sample in stream { assert!(sample[0] <= dsp::db(-6.0) as f32 + 1e-7); assert!((sample[0] + sample[1]).abs() < 1e-7); }
     }
     #[test]
     fn compressor_uses_sidechain_without_adding_it_to_output() {
         let node = node("AudioCompressor", &[("Attack", 0.0001), ("Threshold", -20.0), ("Ratio", 10.0)]);
         let mut stream = vec![[0.1; 2]; 2000]; let detector = vec![[1.0; 2]; 2000];
         Effect::default().process(&node, &mut stream, Some(&detector));
-        assert!((stream[1999][0] - (0.1 * dsp::db(-18.0)) as f32).abs() < 1e-6);
+        assert!((stream[1999][0] - 0.1 * 200.0_f32.powf(-0.45)).abs() < 1e-6);
         let mut silence = vec![[0.0; 2]; 2000];
         Effect::default().process(&node, &mut silence, Some(&detector));
         assert!(silence.iter().all(|frame| *frame == [0.0; 2]));

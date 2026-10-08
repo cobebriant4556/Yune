@@ -139,7 +139,7 @@ wire(compressor, output)
 player:Play()
 detector:Play()
 local ducked = capture(2048)
-near(buffer.readf32(ducked, 2000 * 8), 0.1 * 10 ^ (-18 / 20))
+near(buffer.readf32(ducked, 2000 * 8), 0.1 * 200 ^ (-0.45))
 player.Volume = 0
 local noLeak = capture(256)
 for index = 0, 511 do
@@ -148,7 +148,7 @@ end
 player.Volume = 0.2
 sidechain:Destroy()
 local restored = capture(9600)
-near(buffer.readf32(restored, 9500 * 8), 0.1)
+near(buffer.readf32(restored, 9500 * 8), 0.1 * 2 ^ (-0.45))
 player:Stop()
 detector:Stop()
 local filter = make("AudioFilter")
