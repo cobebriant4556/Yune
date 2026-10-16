@@ -46,10 +46,10 @@ jobs:
           git -C "$RUNNER_TEMP/theos-jailed" checkout --detach FETCH_HEAD
           git -C "$RUNNER_TEMP/theos-jailed" submodule update --init module/lib/fishhook
           "$RUNNER_TEMP/theos-jailed/install"
-      - name: Prepare non-distributable component packaging fixture
+      - name: Prepare build inputs and compile video codecs
         run: |
           set -euxo pipefail
-          mkdir -p "$SOURCE/tmp/Payload/YouTube.app/PlugIns"
+          mkdir -p "$SOURCE/tmp/Payload/YouTube.app"
           printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/fixture.c"
           xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 -Wl,-headerpad,0x8000 "$RUNNER_TEMP/fixture.c" -o "$SOURCE/tmp/Payload/YouTube.app/YouTube"
           python3 - <<'PY'
@@ -62,50 +62,84 @@ jobs:
           p = root / 'Makefile'
           p.write_text(p.read_text().replace('PACKAGE_VERSION = X.X.X-X.X', 'PACKAGE_VERSION = 21.41.5-5.0.1'))
           PY
-          find "$SOURCE/Extensions" -maxdepth 1 -type d -name '*.appex' -exec cp -R {} "$SOURCE/tmp/Payload/YouTube.app/PlugIns/" \;
-          if [ -f ci/prepare_source.py ]; then python3 ci/prepare_source.py; fi
+          python3 ci/prepare_source.py
       - name: Compile all configured tweaks
         run: |
           set -o pipefail
           cd "$SOURCE"
-          make -j3 package CODESIGN_IPA=0 ARCHS=arm64 SIDELOAD=1 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
-      - name: Export compiled components only
+          make -j3 all CODESIGN_IPA=0 ARCHS=arm64 SIDELOAD=1 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+      - name: Export compiled libraries and original resources
         run: |
           python3 - <<'PY'
-          import hashlib, json, os, plistlib, re, shutil, subprocess, tarfile, zipfile
+          import hashlib, json, os, re, shutil, subprocess, tarfile
           from pathlib import Path
           root = Path(os.environ['SOURCE'])
           out = Path(os.environ['GITHUB_WORKSPACE']) / 'output'
           out.mkdir()
-          packages = list((root/'packages').glob('*.ipa'))
-          if len(packages) != 1:
-              raise SystemExit('Expected exactly one intermediate component package')
-          stage = Path(os.environ['RUNNER_TEMP'])/'export-components'
-          with zipfile.ZipFile(packages[0]) as z:
-              z.extractall(stage)
-          app = stage/'Payload/YouTube.app'
-          binary = app/'YouTube'
-          loads = subprocess.check_output(['otool','-l',str(binary)], text=True)
-          (out/'load-commands.txt').write_text(loads)
+          app = Path(os.environ['RUNNER_TEMP']) / 'export-components/YouTube.app'
+          app.mkdir(parents=True)
+          resources = root/'Resources'
+          if resources.exists():
+              for p in resources.iterdir():
+                  if p.name == 'Info.plist':
+                      shutil.copy2(p, out/'Resources-Info.plist')
+                  elif p.is_dir():
+                      shutil.copytree(p, app/p.name, dirs_exist_ok=True)
+                  elif p.is_file():
+                      shutil.copy2(p, app/p.name)
+          frameworks = app/'Frameworks'
+          frameworks.mkdir(exist_ok=True)
+          makefile = (root/'Makefile').read_text()
+          match = re.search(r'^YTLitePlus_INJECT_DYLIBS\s*=\s*(.+)$', makefile, re.M)
+          if not match:
+              raise SystemExit('Missing configured injection list')
+          sources = ['.theos/obj/YTLitePlus.dylib'] + match[1].split()
+          if len(sources) != 16:
+              raise SystemExit(f'Unexpected injection count: {len(sources)}')
           injections = []
-          for block in loads.split('Load command ')[1:]:
-              cmd = re.search(r'\bcmd (LC_\w+)', block)
-              name = re.search(r'\bname (.+?) \(offset', block)
-              if cmd and name and cmd[1] in ('LC_LOAD_DYLIB','LC_LOAD_WEAK_DYLIB') and name[1].startswith('@rpath/'):
-                  injections.append({'name':name[1], 'weak':cmd[1]=='LC_LOAD_WEAK_DYLIB'})
-          if len(injections) < 15:
-              raise SystemExit(f'Incomplete component package: {len(injections)} injections')
-          binary.unlink()
-          (app/'Info.plist').unlink()
-          shutil.rmtree(app/'_CodeSignature', ignore_errors=True)
-          manifest = {'source_repository':'bhackel/YTLitePlus','source_commit':os.environ['SOURCE_SHA'],'youtube_version':'21.41.5','ytlite_version':'5.0.1','injections':injections,'rpath':'@executable_path/Frameworks','components_only':True,'submodules':subprocess.check_output(['git','-C',str(root),'submodule','status','--recursive'],text=True),'files':{}}
-          resource_info = root/'Resources/Info.plist'
-          if resource_info.exists():
-              shutil.copy2(resource_info, out/'Resources-Info.plist')
+          for relative in sources:
+              p = root/relative
+              if not p.is_file() or p.stat().st_size < 4096:
+                  raise SystemExit(f'Missing compiled library: {relative}')
+              shutil.copy2(p, frameworks/p.name)
+              injections.append({'name':'@rpath/'+p.name, 'weak':True})
+          alderis = root/'.theos/obj/install/Library/Frameworks/Alderis.framework'
+          (frameworks/'Alderis.framework').mkdir(exist_ok=True)
+          for p in alderis.iterdir():
+              if p.is_file():
+                  shutil.copy2(p, frameworks/'Alderis.framework'/p.name)
+          substrate = Path(os.environ['THEOS'])/'mod/jailed/lib/CydiaSubstrate.framework'
+          shutil.copytree(substrate, frameworks/substrate.name, dirs_exist_ok=True)
+          bundle_sources = {
+              'YTLite.bundle': root/'Tweaks/YTLite/var/jb/Library/Application Support/YTLite.bundle',
+              'YTUHD.bundle': root/'Tweaks/YTUHD/layout/Library/Application Support/YTUHD.bundle',
+              'YouPiP.bundle': root/'Tweaks/YouPiP/layout/Library/Application Support/YouPiP.bundle',
+              'RYD.bundle': root/'Tweaks/Return-YouTube-Dislikes/layout/Library/Application Support/RYD.bundle',
+              'YTABC.bundle': root/'Tweaks/YTABConfig/layout/Library/Application Support/YTABC.bundle',
+              'YouMute.bundle': root/'Tweaks/YouMute/layout/Library/Application Support/YouMute.bundle',
+              'DontEatMyContent.bundle': root/'Tweaks/DontEatMyContent/layout/Library/Application Support/DontEatMyContent.bundle',
+              'YTHoldForSpeed.bundle': root/'Tweaks/YTHoldForSpeed/layout/Library/Application Support/YTHoldForSpeed.bundle',
+              'iSponsorBlock.bundle': root/'Tweaks/iSponsorBlock/layout/Library/Application Support/iSponsorBlock.bundle',
+              'YTVideoOverlay.bundle': root/'Tweaks/YTVideoOverlay/layout/Library/Application Support/YTVideoOverlay.bundle',
+              'YouQuality.bundle': root/'Tweaks/YouQuality/layout/Library/Application Support/YouQuality.bundle',
+              'YouTimeStamp.bundle': root/'Tweaks/YouTimeStamp/layout/Library/Application Support/YouTimeStamp.bundle',
+              'YouLoop.bundle': root/'Tweaks/YouLoop/layout/Library/Application Support/YouLoop.bundle',
+              'YTLitePlus.bundle': root/'lang/YTLitePlus.bundle'
+          }
+          for name,p in bundle_sources.items():
+              if not p.is_dir():
+                  raise SystemExit(f'Missing resources: {p}')
+              shutil.copytree(p, app/name, dirs_exist_ok=True)
+          for p in (root/'Extensions').glob('*.appex'):
+              shutil.copytree(p, app/'PlugIns'/p.name, dirs_exist_ok=True)
+          if (app/'YouTube').exists() or (app/'Info.plist').exists():
+              raise SystemExit('Refusing to export an app fixture')
+          manifest = {'source_repository':'bhackel/YTLitePlus','source_commit':os.environ['SOURCE_SHA'],'youtube_version':'21.41.5','ytlite_version':'5.0.1','injections':injections,'rpath':'@executable_path/Frameworks','components_only':True,'requires_dependency_rewrite':True,'build_commit':os.environ['GITHUB_SHA'],'submodules':subprocess.check_output(['git','-C',str(root),'submodule','status','--recursive'],text=True),'files':{}}
           for p in sorted(app.rglob('*')):
               if p.is_file():
                   manifest['files'][str(p.relative_to(app))] = hashlib.sha256(p.read_bytes()).hexdigest()
           (out/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          shutil.copy2(Path(os.environ['GITHUB_WORKSPACE'])/'ci/prepare_source.py', out/'build-compatibility-fixes.py')
           with tarfile.open(out/'components.tar.gz','w:gz') as tar:
               tar.add(app, arcname='YouTube.app')
           print(json.dumps({'injections':injections,'file_count':len(manifest['files'])},indent=2))
