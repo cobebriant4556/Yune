@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,15 @@ s = p.read_text().replace('export ADDITIONAL_CFLAGS = -I$(THEOS_PROJECT_DIR)/Twe
 p.write_text('MAKEFLAGS += --keep-going\n' + s)
 p = root / 'Tweaks/Alderis/lcpshim/Makefile'
 p.write_text('TARGET = iphone:clang:16.5:12.0\n' + p.read_text())
+sdk_version = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], text=True).strip()
+installed_sdks = {'16.5', sdk_version}
+pattern = r'(?m)^([ \t]*(?:export[ \t]+)?TARGET[ \t]*[:?]?=[ \t]*iphone:clang:)([0-9.]+)(:)'
+for p in (root / 'Tweaks').glob('*/Makefile'):
+    s = p.read_text()
+    updated = re.sub(pattern, lambda m: m[1] + (m[2] if m[2] in installed_sdks else 'latest') + m[3], s)
+    if updated != s:
+        print('Selecting installed SDK for', p.relative_to(root))
+        p.write_text(updated)
 p = Path(os.environ['THEOS']) / 'vendor/lib/CydiaSubstrate.framework/CydiaSubstrate.tbd'
 p.write_text('''--- !tapi-tbd
 tbd-version: 4
