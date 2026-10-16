@@ -1,0 +1,131 @@
+name: Build YTLitePlus components
+on:
+  push:
+    branches: [build/ytliteplus-20261015]
+    paths: [.github/workflows/ytliteplus-components.yml]
+permissions:
+  contents: read
+concurrency:
+  group: ytliteplus-components
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      SOURCE_SHA: e9ace54254d1de84e0d47b87e6eb444420317de4
+    steps:
+      - name: Install build dependencies
+        run: |
+          brew install make ldid dpkg
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
+          echo "SOURCE=$RUNNER_TEMP/ytliteplus" >> "$GITHUB_ENV"
+      - name: Fetch exact public source and dependencies
+        run: |
+          set -euxo pipefail
+          git init "$SOURCE"
+          git -C "$SOURCE" remote add origin https://github.com/bhackel/YTLitePlus.git
+          git -C "$SOURCE" fetch --depth=1 origin "$SOURCE_SHA"
+          git -C "$SOURCE" checkout --detach FETCH_HEAD
+          git -C "$SOURCE" submodule update --init --recursive --jobs 4
+          git init "$THEOS"
+          git -C "$THEOS" remote add origin https://github.com/theos/theos.git
+          git -C "$THEOS" fetch --depth=1 origin 3da31488281ecf4394d10302d2629607f4a1aa07
+          git -C "$THEOS" checkout --detach FETCH_HEAD
+          git -C "$THEOS" submodule update --init --recursive --jobs 4
+          git clone --depth=1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
+          git -C "$RUNNER_TEMP/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p "$THEOS/sdks"
+          ditto "$RUNNER_TEMP/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/iPhoneOS16.5.sdk"
+          git init "$RUNNER_TEMP/theos-jailed"
+          git -C "$RUNNER_TEMP/theos-jailed" remote add origin https://github.com/qnblackcat/theos-jailed.git
+          git -C "$RUNNER_TEMP/theos-jailed" fetch --depth=1 origin 662fd704aed27b8956bcfe52a35e2b676921ab42
+          git -C "$RUNNER_TEMP/theos-jailed" checkout --detach FETCH_HEAD
+          git -C "$RUNNER_TEMP/theos-jailed" submodule update --init module/lib/fishhook
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path(os.environ['RUNNER_TEMP']) / 'theos-jailed/install'
+          p.write_text(p.read_text().replace('http://apt.saurik.com/', 'https://apt.saurik.com/'))
+          PY
+          "$RUNNER_TEMP/theos-jailed/install"
+      - name: Prepare non-distributable component packaging fixture
+        run: |
+          set -euxo pipefail
+          mkdir -p "$SOURCE/tmp/Payload/YouTube.app/PlugIns"
+          printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/fixture.c"
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 -Wl,-headerpad,0x8000 "$RUNNER_TEMP/fixture.c" -o "$SOURCE/tmp/Payload/YouTube.app/YouTube"
+          python3 - <<'PY'
+          import os, plistlib
+          from pathlib import Path
+          root = Path(os.environ['SOURCE'])
+          app = root / 'tmp/Payload/YouTube.app'
+          info = {'CFBundleExecutable':'YouTube','CFBundleIdentifier':'com.google.ios.youtube','CFBundleName':'YouTube','CFBundleDisplayName':'YouTube','CFBundlePackageType':'APPL','CFBundleVersion':'21.41.5','CFBundleShortVersionString':'21.41.5','MinimumOSVersion':'17.0','UIDeviceFamily':[1,2]}
+          (app / 'Info.plist').write_bytes(plistlib.dumps(info))
+          p = root / 'Makefile'
+          p.write_text(p.read_text().replace('PACKAGE_VERSION = X.X.X-X.X', 'PACKAGE_VERSION = 21.41.5-5.0.1'))
+          PY
+          find "$SOURCE/Extensions" -maxdepth 1 -type d -name '*.appex' -exec cp -R {} "$SOURCE/tmp/Payload/YouTube.app/PlugIns/" \;
+      - name: Compile all configured tweaks
+        run: |
+          set -o pipefail
+          cd "$SOURCE"
+          make -j3 package CODESIGN_IPA=0 ARCHS=arm64 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+      - name: Export compiled components only
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, plistlib, re, shutil, subprocess, tarfile, zipfile
+          from pathlib import Path
+          root = Path(os.environ['SOURCE'])
+          out = Path(os.environ['GITHUB_WORKSPACE']) / 'output'
+          out.mkdir()
+          packages = list((root/'packages').glob('*.ipa'))
+          if len(packages) != 1:
+              raise SystemExit('Expected exactly one intermediate component package')
+          stage = Path(os.environ['RUNNER_TEMP'])/'export-components'
+          with zipfile.ZipFile(packages[0]) as z:
+              z.extractall(stage)
+          app = stage/'Payload/YouTube.app'
+          binary = app/'YouTube'
+          loads = subprocess.check_output(['otool','-l',str(binary)], text=True)
+          (out/'load-commands.txt').write_text(loads)
+          injections = []
+          for block in loads.split('Load command ')[1:]:
+              cmd = re.search(r'\bcmd (LC_\w+)', block)
+              name = re.search(r'\bname (.+?) \(offset', block)
+              if cmd and name and cmd[1] in ('LC_LOAD_DYLIB','LC_LOAD_WEAK_DYLIB') and name[1].startswith('@rpath/'):
+                  injections.append({'name':name[1], 'weak':cmd[1]=='LC_LOAD_WEAK_DYLIB'})
+          if len(injections) < 15:
+              raise SystemExit(f'Incomplete component package: {len(injections)} injections')
+          binary.unlink()
+          (app/'Info.plist').unlink()
+          shutil.rmtree(app/'_CodeSignature', ignore_errors=True)
+          manifest = {'source_repository':'bhackel/YTLitePlus','source_commit':os.environ['SOURCE_SHA'],'youtube_version':'21.41.5','ytlite_version':'5.0.1','injections':injections,'rpath':'@executable_path/Frameworks','components_only':True,'submodules':subprocess.check_output(['git','-C',str(root),'submodule','status','--recursive'],text=True),'files':{}}
+          resource_info = root/'Resources/Info.plist'
+          if resource_info.exists():
+              shutil.copy2(resource_info, out/'Resources-Info.plist')
+          for p in sorted(app.rglob('*')):
+              if p.is_file():
+                  manifest['files'][str(p.relative_to(app))] = hashlib.sha256(p.read_bytes()).hexdigest()
+          (out/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          with tarfile.open(out/'components.tar.gz','w:gz') as tar:
+              tar.add(app, arcname='YouTube.app')
+          print(json.dumps({'injections':injections,'file_count':len(manifest['files'])},indent=2))
+          PY
+      - name: Upload compiled component artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytliteplus-components
+          path: output/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytliteplus-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 3
