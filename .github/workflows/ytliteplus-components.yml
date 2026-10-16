@@ -2,7 +2,7 @@ name: Build YTLitePlus components
 on:
   push:
     branches: [build/ytliteplus-20261015]
-    paths: [.github/workflows/ytliteplus-components.yml]
+    paths: [.github/workflows/ytliteplus-components.yml, ci/**]
 permissions:
   contents: read
 concurrency:
@@ -16,9 +16,10 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: 1
       SOURCE_SHA: e9ace54254d1de84e0d47b87e6eb444420317de4
     steps:
+      - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
-          brew install make ldid dpkg
+          brew install make ldid dpkg meson ninja
           echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "THEOS=$RUNNER_TEMP/theos" >> "$GITHUB_ENV"
           echo "SOURCE=$RUNNER_TEMP/ytliteplus" >> "$GITHUB_ENV"
@@ -44,12 +45,6 @@ jobs:
           git -C "$RUNNER_TEMP/theos-jailed" fetch --depth=1 origin 662fd704aed27b8956bcfe52a35e2b676921ab42
           git -C "$RUNNER_TEMP/theos-jailed" checkout --detach FETCH_HEAD
           git -C "$RUNNER_TEMP/theos-jailed" submodule update --init module/lib/fishhook
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p = Path(os.environ['RUNNER_TEMP']) / 'theos-jailed/install'
-          p.write_text(p.read_text().replace('http://apt.saurik.com/', 'https://apt.saurik.com/'))
-          PY
           "$RUNNER_TEMP/theos-jailed/install"
       - name: Prepare non-distributable component packaging fixture
         run: |
@@ -68,11 +63,12 @@ jobs:
           p.write_text(p.read_text().replace('PACKAGE_VERSION = X.X.X-X.X', 'PACKAGE_VERSION = 21.41.5-5.0.1'))
           PY
           find "$SOURCE/Extensions" -maxdepth 1 -type d -name '*.appex' -exec cp -R {} "$SOURCE/tmp/Payload/YouTube.app/PlugIns/" \;
+          if [ -f ci/prepare_source.py ]; then python3 ci/prepare_source.py; fi
       - name: Compile all configured tweaks
         run: |
           set -o pipefail
           cd "$SOURCE"
-          make -j3 package CODESIGN_IPA=0 ARCHS=arm64 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          make -j3 package CODESIGN_IPA=0 ARCHS=arm64 SIDELOAD=1 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
       - name: Export compiled components only
         run: |
           python3 - <<'PY'
